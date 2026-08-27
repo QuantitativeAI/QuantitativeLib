@@ -13,6 +13,10 @@ export Instrument
 export Coupon
 export Bond
 
+import Base: isless
+
+isless(p1::Period, p2::Period) = isless(p1.days, p2.days)
+
 # --- Instrument Types ---
 
 """

@@ -43,14 +43,14 @@ end
 Add a period to a calendar.
 """
 function add_period!(c::Calendar, period::Period)
-    push!(c.days, c.days[end] + period.days)
+    return push!(c.days, c.days[end] + Dates.Day(period.days))
 end
 
 """
 Add a period to a calendar (non-mutating version).
 """
 function add_period(c::Calendar, period::Period)
-    return push!(c.days, c.days[end] + period.days)
+    return push!(c.days, c.days[end] + Dates.Day(period.days))
 end
 
 """
