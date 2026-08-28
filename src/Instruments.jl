@@ -4,10 +4,10 @@
 
 module Instruments
 
-using ..QuantitativeCore: Calendar, Day, Period, Year, Month
+using ..QuantitativeCore: InstrumentCalendar, PeriodDays
 
 using Dates
-using .Dates: Date, Calendar, Period, Day
+using .Dates: Date, Period, Day
 
 export Instrument
 export Coupon
@@ -15,7 +15,7 @@ export Bond
 
 import Base: isless
 
-isless(p1::Period, p2::Period) = isless(p1.days, p2.days)
+isless(p1::PeriodDays, p2::PeriodDays) = isless(p1.days, p2.days)
 
 # --- Instrument Types ---
 

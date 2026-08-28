@@ -2,7 +2,7 @@
 module SwapPricing
 
 using Dates
-using .Dates: Date, Calendar, Period, Day
+using .Dates: Date
 using ..Pricers: Pricer
 
 export Payment, SwapLeg, Swap, SettledPayment
