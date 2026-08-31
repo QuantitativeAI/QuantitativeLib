@@ -1,12 +1,13 @@
 # src/QuantitativeLib/Pricers.jl
 module Pricers
 
-using ..QuantitativeCore: InstrumentCalendar
+using ..Instruments: Bond, ZeroCouponBond, CouponBond
 
 using Dates
 using .Dates: Date
 
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer
+export InterestMode, ContinuousInterest, SimpleInterest
 export price
 
 """
@@ -40,49 +41,65 @@ struct HullWhitePricer <: Pricer
 end
 
 """
-Zero-coupon bond pricer.
+Abstract base type for interest compounding modes."""
+abstract type InterestMode end
 
-Prices a zero-coupon bond by discounting its face value back to the start date
-using a present value calculation.
+"""
+Continuously compounded interest. Discount factor: `exp(-r * t)`.
+"""
+struct ContinuousInterest <: InterestMode end
+
+"""
+Simple (linear) interest. Discount factor: `1 / (1 + r * t)`.
+"""
+struct SimpleInterest <: InterestMode end
+
+"""
+Generic bond pricer.
+
+Takes a bond instrument and prices it according to the type of the instrument:
+- A `ZeroCouponBond` is priced as the present value of its face value.
+- A `CouponBond` is priced as the sum of each discounted coupon payment plus
+  the discounted face value at maturity.
 
 # Fields
-- `calendar::InstrumentCalendar`: The instrument calendar. The first date is the
-  start (valuation) date and the last date is the maturity date (the full term).
-- `discount_rate::Float64`: The annual discount rate (continuously compounded) used for present value.
-- `face_value::Float64`: The face (par) value paid at maturity.
+- `bond::Bond`: The bond instrument being priced.
+- `discount_rate::Float64`: The annual discount rate used for present value.
+- `interest::InterestMode`: The compounding mode for the discount factor. Use
+  `ContinuousInterest()` (the default) or `SimpleInterest()`.
 
 # Constructor
-- `BondPricer(calendar::InstrumentCalendar, discount_rate::Float64, face_value::Float64 = 100.0)`
+- `BondPricer(bond::Bond, discount_rate::Float64, interest::InterestMode = ContinuousInterest())`
 """
 struct BondPricer <: Pricer
-    calendar::InstrumentCalendar
+    bond::Bond
     discount_rate::Float64
-    face_value::Float64
+    interest::InterestMode
 
-    function BondPricer(calendar::InstrumentCalendar,
+    function BondPricer(bond::Bond,
                         discount_rate::Float64,
-                        face_value::Float64 = 100.0)
-        @assert length(calendar.days) >= 2 "Calendar must contain at least two dates (start and maturity)"
-        @assert calendar.days[end] >= calendar.days[1] "Maturity date must be on or after the start date"
+                        interest::InterestMode = ContinuousInterest())
         @assert discount_rate >= 0.0 "Discount rate must be non-negative"
-        @assert face_value > 0.0 "Face value must be positive"
-        return new(calendar, discount_rate, face_value)
+        return new(bond, discount_rate, interest)
     end
 end
 
 """
-Start (valuation) date of the bond: the first date in the calendar.
+Start (valuation) date of the bond: the issue date.
 """
 function start_date(p::BondPricer)::Date
-    return p.calendar.days[1]
+    return start_date(p.bond)
 end
 
 """
-Maturity date of the bond: the last date in the calendar (the full term).
+Maturity date of the bond.
 """
 function maturity_date(p::BondPricer)::Date
-    return p.calendar.days[end]
+    return maturity_date(p.bond)
 end
+
+start_date(b::Bond)::Date = b.issue_date
+maturity_date(b::Bond)::Date = b.maturity
 
 """
 Time to maturity in years, using an actual/365 day-count convention.
@@ -92,18 +109,62 @@ function bond_tenor(p::BondPricer)::Float64
 end
 
 """
-Discount factor from the start date to maturity, using continuous compounding.
+Discount factor from the bond's start date to `date`, using the pricer's
+compounding mode.
 """
-function discount_factor(p::BondPricer)::Float64
-    return exp(-p.discount_rate * bond_tenor(p))
+function discount_factor(p::BondPricer, date::Date)::Float64
+    t = (date - start_date(p)).value / 365.0
+    return discount_factor(p.discount_rate, t, p.interest)
 end
 
 """
-Price the zero-coupon bond as the present value of its face value discounted
+Discount factor from the start date to maturity, using the pricer's
+compounding mode.
+"""
+function discount_factor(p::BondPricer)::Float64
+    return discount_factor(p, maturity_date(p))
+end
+
+"""
+Discount factor for continuously compounded interest: `exp(-r * t)`.
+"""
+function discount_factor(rate::Float64, tenor::Float64, ::ContinuousInterest)::Float64
+    return exp(-rate * tenor)
+end
+
+"""
+Discount factor for simple interest: `1 / (1 + r * t)`.
+"""
+function discount_factor(rate::Float64, tenor::Float64, ::SimpleInterest)::Float64
+    return 1.0 / (1.0 + rate * tenor)
+end
+
+"""
+Price a zero-coupon bond as the present value of its face value discounted
 back to the start date: `price = face_value * discount_factor`.
 """
+function price(b::ZeroCouponBond, p::BondPricer)::Float64
+    return b.face_value * discount_factor(p, b.maturity)
+end
+
+"""
+Price a coupon bond as the sum of each coupon payment discounted back to the
+start date, plus the face value discounted back to the start date at maturity:
+`price = Σ coupon.amount * discount_factor(coupon.date) + face_value * discount_factor(maturity)`.
+"""
+function price(b::CouponBond, p::BondPricer)::Float64
+    pv = 0.0
+    for coupon in b.coupons
+        pv += coupon.amount * discount_factor(p, coupon.date)
+    end
+    return pv + b.face_value * discount_factor(p, b.maturity)
+end
+
+"""
+Price the bond instrument held by the pricer, dispatching on the bond's type.
+"""
 function price(p::BondPricer)::Float64
-    return p.face_value * discount_factor(p)
+    return price(p.bond, p)
 end
 
 end

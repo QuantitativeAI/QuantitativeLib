@@ -11,7 +11,9 @@ using .Dates: Date, Period, Day
 import Dates: Date
 
 export Instrument
+export Bond
 export Coupon
+export ZeroCouponBond
 export CouponBond
 
 import Base: isless
@@ -24,6 +26,11 @@ isless(p1::PeriodDays, p2::PeriodDays) = isless(p1.days, p2.days)
 Abstract base type for all financial instruments.
 """
 abstract type Instrument end
+
+"""
+Abstract base type for all bond instruments.
+"""
+abstract type Bond <: Instrument end
 
 """
 Represents a coupon payment.
@@ -39,31 +46,60 @@ struct Coupon
 end
 
 """
-Represents a bond instrument.
+Represents a zero-coupon bond instrument.
+
+# Fields:
+- `issue_date::Date`: The date when the bond is issued.
+- `maturity::Date`: The maturity date of the bond.
+- `face_value::Float64`: The face (par) value paid at maturity.
+
+# Constructor:
+- `ZeroCouponBond(issue_date::Date, maturity::Date, face_value::Float64 = 100.0)`
+"""
+struct ZeroCouponBond <: Bond
+    issue_date::Date
+    maturity::Date
+    face_value::Float64
+
+    function ZeroCouponBond(issue_date::Date, maturity::Date, face_value::Float64 = 100.0)
+        @assert maturity >= issue_date "Maturity date must be on or after the issue date"
+        @assert face_value > 0.0 "Face value must be positive"
+        return new(issue_date, maturity, face_value)
+    end
+end
+
+"""
+Represents a coupon bond instrument.
 
 # Fields:
 - `issue_date::Date`: The date when the bond is issued.
 - `maturity::Date`: The maturity date of the bond
 - `coupon_rate::Float64`: The annual coupon rate of the bond.
-- `payment_frequency::Period`: The frequency of coupon payments (e.g., Year(1) or Month(6)).
+- `payment_schedule::InstrumentCalendar`: The calendar of payment dates.
 - `coupons::Vector{Coupon}`: The vector of Coupon instances associated with the bond.
+- `face_value::Float64`: The face (par) value repaid at maturity.
 
 # Constructor:
-- `Bond(issue_date::Date, maturity::Date, coupon_rate::Float64, payment_frequency::Period)`
+- `CouponBond(issue_date::Date, maturity::Date, coupon_rate::Float64,
+              payment_schedule::InstrumentCalendar, face_value::Float64 = 100.0)`
 """
-struct CouponBond
+struct CouponBond <: Bond
     issue_date::Date
     maturity::Date
     coupon_rate::Float64
     payment_schedule::InstrumentCalendar
     coupons::Vector{Coupon}
+    face_value::Float64
 
-    function CouponBond(issue_date::Date, maturity::Date, coupon_rate::Float64, payment_schedule::InstrumentCalendar)
+    function CouponBond(issue_date::Date, maturity::Date, coupon_rate::Float64,
+                        payment_schedule::InstrumentCalendar, face_value::Float64 = 100.0)
         @assert coupon_rate >= 0.0 "Coupon rate must be non-negative"
+        @assert maturity >= issue_date "Maturity date must be on or after the issue date"
+        @assert face_value > 0.0 "Face value must be positive"
 
         # Generate coupon schedule
         coupons = Coupon[]
-        return new(issue_date, maturity, coupon_rate, payment_schedule, coupons)
+        return new(issue_date, maturity, coupon_rate, payment_schedule, coupons, face_value)
     end
 end
 
