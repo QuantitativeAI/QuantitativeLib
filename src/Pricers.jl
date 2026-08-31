@@ -4,7 +4,6 @@ module Pricers
 using ..Instruments: Bond, ZeroCouponBond, CouponBond
 
 using Dates
-using .Dates: Date
 
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer
 export InterestMode, ContinuousInterest, SimpleInterest
@@ -80,6 +79,7 @@ struct BondPricer <: Pricer
                         discount_rate::Float64,
                         interest::InterestMode = ContinuousInterest())
         @assert discount_rate >= 0.0 "Discount rate must be non-negative"
+        @assert start_date(bond) <= maturity_date(bond) "Start date must be before or equal to maturity"
         return new(bond, discount_rate, interest)
     end
 end
@@ -98,8 +98,12 @@ function maturity_date(p::BondPricer)::Date
     return maturity_date(p.bond)
 end
 
-start_date(b::Bond)::Date = b.issue_date
+"""
+Maturity date accessor for Bond instruments.
+"""
 maturity_date(b::Bond)::Date = b.maturity
+
+start_date(b::Bond)::Date = b.issue_date
 
 """
 Time to maturity in years, using an actual/365 day-count convention.
@@ -153,6 +157,11 @@ start date, plus the face value discounted back to the start date at maturity:
 `price = Σ coupon.amount * discount_factor(coupon.date) + face_value * discount_factor(maturity)`.
 """
 function price(b::CouponBond, p::BondPricer)::Float64
+    @assert start_date(p) <= b.maturity "Maturity must be on or after start date"
+    for coupon in b.coupons
+        @assert start_date(p) <= coupon.date <= b.maturity "Coupon date must be between start and maturity"
+    end
+
     pv = 0.0
     for coupon in b.coupons
         pv += coupon.amount * discount_factor(p, coupon.date)
