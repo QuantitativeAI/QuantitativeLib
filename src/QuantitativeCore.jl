@@ -3,8 +3,8 @@
 module QuantitativeCore
 
 using Dates
-
-export InstrumentCalendar, PeriodDays, add_period!, count_days, return2
+import Dates: Date
+export InstrumentCalendar, PeriodDays, add_period!, count_days, return2, Date
 
 """
 A calendar that tracks business days.

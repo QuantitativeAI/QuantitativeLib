@@ -8,10 +8,11 @@ using ..QuantitativeCore: InstrumentCalendar, PeriodDays
 
 using Dates
 using .Dates: Date, Period, Day
+import Dates: Date
 
 export Instrument
 export Coupon
-export Bond
+export CouponBond
 
 import Base: isless
 
@@ -50,20 +51,19 @@ Represents a bond instrument.
 # Constructor:
 - `Bond(issue_date::Date, maturity::Date, coupon_rate::Float64, payment_frequency::Period)`
 """
-struct Bond
+struct CouponBond
     issue_date::Date
     maturity::Date
     coupon_rate::Float64
-    payment_frequency::Period
+    payment_schedule::InstrumentCalendar
     coupons::Vector{Coupon}
 
-    function Bond(issue_date::Date, maturity::Date, coupon_rate::Float64, payment_frequency::Period)
+    function CouponBond(issue_date::Date, maturity::Date, coupon_rate::Float64, payment_schedule::InstrumentCalendar)
         @assert coupon_rate >= 0.0 "Coupon rate must be non-negative"
-        @assert payment_frequency > Period(0) "Payment frequency must be positive"
 
         # Generate coupon schedule
         coupons = Coupon[]
-        return new(issue_date, maturity, coupon_rate, payment_frequency, coupons)
+        return new(issue_date, maturity, coupon_rate, payment_schedule, coupons)
     end
 end
 
@@ -117,17 +117,17 @@ Represents a swap instrument.
 
 # Constructor:
 - `Swap(notional::Float64, fixed_rate::Float64,
-       payment_frequency::Period, start_date::Date, maturity::Date)`: Creates a new instance of `Swap`.
+       payment_frequency::PeriodDays, start_date::Date, maturity::Date)`: Creates a new instance of `Swap`.
 """
 struct Swap <: Instrument
     notional::Float64
     fixed_rate::Float64
-    payment_frequency::Period
+    payment_frequency::PeriodDays
     start_date::Date
     maturity::Date
 
     function Swap(notional::Float64, fixed_rate::Float64,
-                  payment_frequency::Period, start_date::Date,
+                  payment_frequency::PeriodDays, start_date::Date,
                   maturity::Date)
         @assert notional > 0.0 "Notional must be positive"
         return new(notional, fixed_rate, payment_frequency, start_date, maturity)
@@ -135,7 +135,7 @@ struct Swap <: Instrument
 end
 
 # Generate all coupons for bond
-function generate_coupons!(bond::Bond)
+function generate_coupons!(bond::CouponBond)
     # Implementation to generate coupons for a bond
     # This is a placeholder for the actual logic
     # For now, we just add a dummy coupon

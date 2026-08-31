@@ -12,7 +12,7 @@ include("./Instruments.jl")
 include("./Pricers.jl")
 
 using .Pricers
-export Pricer, BlackScholesPricer, HullWhitePricer
+export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price
 
 include("SwapPricing.jl")
 
