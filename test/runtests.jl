@@ -59,3 +59,15 @@ end
     expected = 100.0 / (1.0 + 0.05 * days / 365.0)
     @test QuantitativeLib.price(p) ≈ expected
 end
+
+@testset "add_periods" begin
+    cal = QuantitativeLib.InstrumentCalendar([Date(2024, 1, 1)])
+    
+    # Add 3 periods starting from 2024-01-01 with 30-day spacing
+    QuantitativeLib.add_periods(cal, Date(2024, 2, 1), 30, 3)
+    
+    @test length(cal.days) == 4
+    @test cal.days[2] == Date(2024, 2, 1)
+    @test cal.days[3] == Date(2024, 3, 2)
+    @test cal.days[4] == Date(2024, 4, 1)
+end

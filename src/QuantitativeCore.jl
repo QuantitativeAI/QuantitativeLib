@@ -2,15 +2,15 @@
 
 module QuantitativeCore
 
-using Dates
-import Dates: Date
-export InstrumentCalendar, PeriodDays, add_period!, count_days, return2, Date
+using Dates: Day, Hour, Date
+#import Dates: Date
+export InstrumentCalendar, PeriodDays, add_period!, add_periods, count_days, return2, Date
 
 """
 A calendar that tracks business days.
 """
 struct InstrumentCalendar
-    days::Vector{Dates.Date}
+    days::Vector{Date}
 end
 
 """
@@ -23,12 +23,12 @@ end
 """
 Add a period to a calendar.
 """
-add_period!(c::InstrumentCalendar, period::Period) = push!(c.days, c.days[end] + period)
+add_period!(c::InstrumentCalendar, period::PeriodDays) = push!(c.days, c.days[end] + period)
 
 """
 Add a date to a calendar.
 """
-function add_period!(c::InstrumentCalendar, date::Dates.Date)
+function add_period!(c::InstrumentCalendar, date::Date)
     push!(c.days, date)
 end
 
@@ -43,14 +43,30 @@ end
 Add a period to a calendar.
 """
 function add_period!(c::InstrumentCalendar, perioddays::PeriodDays)
-    return push!(c.days, c.days[end] + Dates.Day(perioddays.days))
+    return push!(c.days, c.days[end] + Day(perioddays.days))
 end
 
 """
 Add a period to a calendar (non-mutating version).
 """
 function add_period(c::InstrumentCalendar, perioddays::PeriodDays)
-    return push!(c.days, c.days[end] + Dates.Day(perioddays.days))
+    return push!(c.days, c.days[end] + Day(perioddays.days))
+end
+
+"""
+Add evenly spaced dates to a calendar.
+"""
+function add_periods(c::InstrumentCalendar, start_date::Date, days::Real,
+                     num_periods::Real; exclude_non_business_days::Bool=false,
+                     exclude_holidays::Bool=false)
+    days_int = days isa Rational ? div(numerator(days), denominator(days)) : Int64(days)
+
+    current_date = start_date
+    for _ in 1:Int64(num_periods)
+        push!(c.days, current_date)
+        current_date += Day(days_int)
+    end
+    return c
 end
 
 """
