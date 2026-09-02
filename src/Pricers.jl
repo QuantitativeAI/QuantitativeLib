@@ -133,7 +133,7 @@ end
 Discount factor for continuously compounded interest: `exp(-r * t)`.
 """
 function discount_factor(rate::Float64, tenor::Float64, ::ContinuousInterest)::Float64
-    return exp(-rate * tenor)
+    return exp(-rate * tenor) #tenor is number of years in float
 end
 
 """

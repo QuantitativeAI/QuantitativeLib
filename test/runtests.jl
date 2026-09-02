@@ -29,15 +29,18 @@ end
 end
 
 @testset "BondPricer (coupon bond)" begin
-    # Calendar spanning 2024-01-01 .. 2025-01-01 with semi-annual payments
+    # Calendar starting at the issue date (anchor) with semi-annual payments
     cal = QuantitativeLib.InstrumentCalendar([Date(2024, 1, 1)])
     for d in [Date(2024, 7, 1), Date(2025, 1, 1)]
         push!(cal.days, d)
     end
 
-    bond = QuantitativeLib.CouponBond(Date(2024, 1, 1), Date(2025, 1, 1), 0.05, cal)
-    push!(bond.coupons, QuantitativeLib.Coupon(Date(2024, 7, 1), 2.5))
-    push!(bond.coupons, QuantitativeLib.Coupon(Date(2025, 1, 1), 2.5))
+    bond = QuantitativeLib.CouponBond(Date(2024, 1, 1), cal, 0.05)
+    QuantitativeLib.generate_coupons!(bond)
+
+    # the issue-date anchor is not a payment; maturity is the last payment date
+    @test bond.maturity == Date(2025, 1, 1)
+    @test length(bond.coupons) == 2
 
     p = QuantitativeLib.BondPricer(bond, 0.05)
 
@@ -45,9 +48,29 @@ end
 
     d1 = (Date(2024, 7, 1) - Date(2024, 1, 1)).value
     d2 = (Date(2025, 1, 1) - Date(2024, 1, 1)).value
-    expected = 2.5 * exp(-0.05 * d1 / 365.0) +
-               2.5 * exp(-0.05 * d2 / 365.0) +
+    expected = bond.coupons[1].amount * exp(-0.05 * d1 / 365.0) +
+               bond.coupons[2].amount * exp(-0.05 * d2 / 365.0) +
                100.0 * exp(-0.05 * d2 / 365.0)
+    @test QuantitativeLib.price(p) ≈ expected
+end
+
+@testset "BondPricer (coupon bond, schedule without anchor)" begin
+    # Calendar listing payment dates only: the first entry is the first payment
+    cal = QuantitativeLib.InstrumentCalendar([Date(2024, 7, 1)])
+    for d in [Date(2025, 1, 1), Date(2025, 7, 1)]
+        push!(cal.days, d)
+    end
+
+    bond = QuantitativeLib.CouponBond(Date(2024, 1, 1), cal, 0.05)
+    QuantitativeLib.generate_coupons!(bond)
+
+    @test bond.maturity == Date(2025, 7, 1)
+    @test length(bond.coupons) == 3
+
+    p = QuantitativeLib.BondPricer(bond, 0.05)
+
+    expected = sum([c.amount * exp(-0.05 * (c.date - Date(2024, 1, 1)).value / 365.0) for c in bond.coupons]) +
+               100.0 * exp(-0.05 * (Date(2025, 7, 1) - Date(2024, 1, 1)).value / 365.0)
     @test QuantitativeLib.price(p) ≈ expected
 end
 

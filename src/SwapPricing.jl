@@ -61,7 +61,7 @@ end
 
 # Calculates actual days between two dates.
 function count_actual_days(start::Date, end_date::Date)::Int
-    return diff(end_date, start).days
+    return diff(end_date, start).value
 end
 
 """

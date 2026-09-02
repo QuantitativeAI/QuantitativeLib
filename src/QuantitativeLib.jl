@@ -12,12 +12,12 @@ include("./Instruments.jl")
 include("./Pricers.jl")
 
 using .Instruments
-export Bond, ZeroCouponBond, CouponBond, Coupon
+export Bond, ZeroCouponBond, CouponBond, Coupon, generate_coupons!
 
 using .Pricers
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price
 export InterestMode, ContinuousInterest, SimpleInterest
 
-include("SwapPricing.jl")
+include("./SwapPricing.jl")
 
 end
