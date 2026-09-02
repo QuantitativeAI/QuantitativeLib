@@ -3,8 +3,7 @@
 module QuantitativeCore
 
 using Dates: Day, Hour, Date
-#import Dates: Date
-export InstrumentCalendar, PeriodDays, add_period!, add_periods, count_days, return2, Date
+export InstrumentCalendar, Period, add_period!, add_periods, count_days, return2
 
 """
 A calendar that tracks business days.
@@ -21,22 +20,17 @@ function count_days(c::InstrumentCalendar)
 end
 
 """
-Add a period to a calendar.
+A time period represented in days.
 """
-add_period!(c::InstrumentCalendar, period::PeriodDays) = push!(c.days, c.days[end] + period)
+struct PeriodDays
+    days::Int64
+end
 
 """
 Add a date to a calendar.
 """
 function add_period!(c::InstrumentCalendar, date::Date)
     push!(c.days, date)
-end
-
-"""
-A time period represented in days.
-"""
-struct PeriodDays
-    days::Int64
 end
 
 """
