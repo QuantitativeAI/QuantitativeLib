@@ -2,7 +2,6 @@
 module SwapPricing
 
 using Dates
-using .Dates: Date
 using ..Pricers: Pricer
 
 export Payment, SwapLeg, Swap, SettledPayment
@@ -59,11 +58,6 @@ function count_30e_360(start_date::Date, end_date::Date)
            (day_end - day_start)
 end
 
-# Calculates actual days between two dates.
-function count_actual_days(start::Date, end_date::Date)::Int
-    return diff(end_date, start).value
-end
-
 """
 Swapped payment with cash adjustment for settlement.
 """
@@ -107,8 +101,9 @@ struct Swap
     end
 end
 
-# Helper function to calculate time to maturity
+# Helper function to calculate time to maturity (in years)
 function time_to_maturity(date::Date, maturity_date::Date)::Float64
+    @assert maturity_date >= date "maturity_date must be on or after date"
     return (maturity_date - date).value / 365.0
 end
 
@@ -148,34 +143,39 @@ struct StandardSwapPricer <: Pricer
     end
 end
 
-# Implement discount_factor for StandardSwapPricer
-function discount_factor(pricer::StandardSwapPricer, date::Date)::Float64
-    for (d, df) in pricer.discount_curve
-        if d == date
-            return df
+# Look up a discount factor from a pricer's discount curve using
+# log-linear interpolation between nodes.  Extrapolates flat before the
+# first node and flat at the last segment's forward rate after the last.
+function _lookup_discount_factor(discount_curve::Vector{Tuple{Date, Float64}},
+                                date::Date, valuation_date::Date)::Float64
+    # Build tenor / log-DF arrays once per call; acceptable for demo-scale curves.
+    ts = [(d - valuation_date).value / 365.0 for (d, _) in discount_curve]
+    lndf = [log(df) for (_, df) in discount_curve]
+    t = (date - valuation_date).value / 365.0
+
+    if t <= ts[1]
+        return exp(lndf[1])   # flat extrapolation at the short end
+    end
+    if t >= ts[end]
+        # Flat at the last segment's forward rate.
+        n = length(ts)
+        f = n > 1 ? (lndf[n - 1] - lndf[n]) / (ts[n] - ts[n - 1]) : lndf[1] / ts[1]
+        return exp(lndf[end] - f * (t - ts[end]))
+    end
+    # Log-linear interpolation between the two bracketing nodes.
+    for k in 1:(length(ts) - 1)
+        if t <= ts[k + 1]
+            w = (t - ts[k]) / (ts[k + 1] - ts[k])
+            return exp((1.0 - w) * lndf[k] + w * lndf[k + 1])
         end
     end
-    return 1.0
+    error("unreachable: interpolation failed for tenor $t")
 end
 
-# Implement discount_factor for HullWhiteSwapPricer
-function discount_factor(pricer::HullWhiteSwapPricer, date::Date)::Float64
-    for (d, df) in pricer.discount_curve
-        if d == date
-            return df
-        end
+for PricerType in (StandardSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer)
+    @eval function discount_factor(pricer::$PricerType, date::Date)::Float64
+        return _lookup_discount_factor(pricer.discount_curve, date, pricer.discount_curve[1][1])
     end
-    return 1.0
-end
-
-# Implement discount_factor for BlackDesclozelPricer
-function discount_factor(pricer::BlackDesclozelPricer, date::Date)::Float64
-    for (d, df) in pricer.discount_curve
-        if d == date
-            return df
-        end
-    end
-    return 1.0
 end
 
 """
@@ -195,9 +195,11 @@ function present_value(payments::AbstractVector{T}, pricer::Pricer)::Float64 whe
 end
 
 """
-Calculates par rate for a swap.
-The fixed leg's payments are expressed per unit of notional, so the par rate is
-the ratio of discounted payment amounts to the sum of discount factors.
+Calculates the par fixed rate for a swap (per unit of notional).
+
+The fixed leg's `payment.amount` already embeds the notional
+(`notional * rate * days / 365`), so we divide by notional to obtain
+the rate itself.
 """
 function par_rate(swap::Swap, pricer::Pricer)::Float64
     sum_df = 0.0
@@ -206,14 +208,18 @@ function par_rate(swap::Swap, pricer::Pricer)::Float64
     for payment in swap.fixed_leg.payments
         df = discount_factor(pricer, payment.date)
         sum_df += df
-        sum_amount_df += payment.amount * df
+        sum_amount_df += (payment.amount / swap.notional) * df
     end
 
     return sum_amount_df / sum_df
 end
 
 """
-Calculates modified duration for a swap (in years).
+Calculates Macaulay duration for a swap (in years), weighted by
+discounted fixed-leg cash flows measured from the swap's start date.
+
+True modified duration would divide this by (1 + yield), but for a
+par swap the yield ≈ par_rate, so callers can adjust as needed.
 """
 function modified_duration(swap::Swap, pricer::Pricer)::Float64
     sum_tdf = 0.0
@@ -221,7 +227,7 @@ function modified_duration(swap::Swap, pricer::Pricer)::Float64
 
     for payment in swap.fixed_leg.payments
         df = discount_factor(pricer, payment.date)
-        t = time_to_maturity(payment.date, swap.end_date)
+        t = time_to_maturity(swap.start_date, payment.date)
         sum_tdf += (t * df)
         sum_df += df
     end
@@ -238,20 +244,40 @@ function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float
 
     settled = Vector{SettledPayment}()
 
+    # Floating leg: accrue from the last payment date before (or on) settlement
+    # up to the settlement date, prorated against the full period.
+    # payment.amount = notional * rate * period_days / 365, so the rate per day is
+    # payment.amount / period_days / notional. We multiply by adjusted_notional.
+    prev_date = swap.start_date
     for payment in swap.floating_leg.payments
-        if payment.date >= settlement_date
-            accrued_days = max(0, (payment.date - settlement_date).value)
-            adjusted_amount = adjusted_notional * (payment.amount + swap.spread) * accrued_days / 365.0
-            push!(settled, SettledPayment(payment, adjusted_amount))
+        if payment.date > settlement_date
+            accrued_days = (settlement_date - prev_date).value
+            period_days = (payment.date - prev_date).value
+            rate_per_day = payment.amount / period_days / swap.notional
+            adjusted_amount = adjusted_notional * rate_per_day * accrued_days +
+                              adjusted_notional * swap.spread * accrued_days / 365.0
+            if adjusted_amount > 0
+                push!(settled, SettledPayment(payment, adjusted_amount))
+            end
+            break
         end
+        prev_date = payment.date
     end
 
+    # Fixed leg: same logic (no spread component)
+    prev_date = swap.start_date
     for payment in swap.fixed_leg.payments
-        if payment.date >= settlement_date
-            accrued_days = max(0, (payment.date - settlement_date).value)
-            adjusted_amount = adjusted_notional * payment.amount * accrued_days / 365.0
-            push!(settled, SettledPayment(payment, adjusted_amount))
+        if payment.date > settlement_date
+            accrued_days = (settlement_date - prev_date).value
+            period_days = (payment.date - prev_date).value
+            rate_per_day = payment.amount / period_days / swap.notional
+            adjusted_amount = adjusted_notional * rate_per_day * accrued_days
+            if adjusted_amount > 0
+                push!(settled, SettledPayment(payment, adjusted_amount))
+            end
+            break
         end
+        prev_date = payment.date
     end
 
     return settled
