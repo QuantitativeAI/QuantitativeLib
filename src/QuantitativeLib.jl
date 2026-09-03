@@ -18,6 +18,12 @@ using .Pricers
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price
 export InterestMode, ContinuousInterest, SimpleInterest
 
+include("./Curves.jl")
+using .Curves
+export InterestCurve, ZeroCurve
+export tenor, zero_rate, discount_factor, forward_rate
+export BondQuote, cash_flows, bootstrap_zero_curve
+
 include("./SwapPricing.jl")
 
 end
