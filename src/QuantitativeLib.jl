@@ -13,6 +13,7 @@ include("./Pricers.jl")
 
 using .Instruments
 export Bond, ZeroCouponBond, CouponBond, Coupon, Option, generate_coupons!
+using .Instruments: Option  # Ensure Option is available in main scope
 
 using .Pricers
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price

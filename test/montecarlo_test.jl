@@ -128,7 +128,7 @@ using Random
         Random.seed!(QuantitativeLib, 42)
         
         # Create an Option instrument
-        option = QuantitativeLib.Option(
+        option = Option(
             100.0,  # underlying_price
             100.0,  # strike_price
             Date(2027, 1, 1),  # expiry_date

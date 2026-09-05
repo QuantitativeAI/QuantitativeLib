@@ -5,6 +5,7 @@
 # into the QuantitativeLib module.
 
 using QuantitativeLib
+using QuantitativeLib.Instruments: Option
 using Dates
 
 println("="^60)
@@ -12,7 +13,7 @@ println("Monte Carlo Option Pricing Demo")
 println("="^60)
 
 # Create an Option instrument
-option = QuantitativeLib.Option(
+option = Option(
     100.0,  # underlying_price
     100.0,  # strike_price
     Date(2027, 1, 1),  # expiry_date
@@ -76,7 +77,7 @@ option_price_threaded = QuantitativeLib.priceCallOption(
 println("  Monte Carlo Price: $(option_price_threaded)")
 
 # Compare results
-println("\n"|"="^60)
+println("\n$("="^60)")
 println("Results Summary:")
 println("  Broadcasted Price: $(option_price_bc)")
 println("  Threaded Price:    $(option_price_threaded)")
@@ -84,11 +85,11 @@ println("  Difference:        $(abs(option_price_bc - option_price_threaded))")
 println("="^60)
 
 # Test with different parameters
-println("\n"|"="^60)
+println("\n$("="^60)")
 println("Testing with different parameters...")
 println("="^60)
 
-option2 = QuantitativeLib.Option(
+option2 = Option(
     150.0,  # underlying_price
     140.0,  # strike_price (in-the-money)
     Date(2027, 6, 1),  # expiry_date
@@ -118,6 +119,6 @@ option_price2 = QuantitativeLib.priceCallOptionBroadcasted(
 println("\nOption 2 (In-the-Money):")
 println("  Monte Carlo Price: $(option_price2)")
 
-println("\n"|"="^60)
+println("\n$("="^60)")
 println("Demo completed successfully!")
 println("="^60)
