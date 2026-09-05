@@ -12,7 +12,7 @@ include("./Instruments.jl")
 include("./Pricers.jl")
 
 using .Instruments
-export Bond, ZeroCouponBond, CouponBond, Coupon, generate_coupons!
+export Bond, ZeroCouponBond, CouponBond, Coupon, Option, generate_coupons!
 
 using .Pricers
 export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price
@@ -25,5 +25,9 @@ export tenor, zero_rate, discount_factor, forward_rate
 export BondQuote, cash_flows, bootstrap_zero_curve
 
 include("./SwapPricing.jl")
+
+include("./MonteCarloPricing.jl")
+using .MonteCarloPricing
+export colwise_simulate_stock_prices, priceCallOption, priceCallOptionBroadcasted
 
 end

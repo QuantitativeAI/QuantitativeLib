@@ -284,3 +284,5 @@ end
     @test_throws AssertionError QuantitativeLib.bootstrap_zero_curve(issue,
         [q1, QuantitativeLib.BondQuote(short, 1.0)])
 end
+
+include("montecarlo_test.jl")
