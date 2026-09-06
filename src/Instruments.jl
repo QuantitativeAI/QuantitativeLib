@@ -9,6 +9,7 @@ using ..QuantitativeCore: InstrumentCalendar, PeriodDays
 using Dates
 using .Dates: Date, Period, Day
 import Dates: Date
+using ..SystemConfig: day_count
 
 export Instrument, Bond, Coupon, ZeroCouponBond, CouponBond, generate_coupons!
 
@@ -201,7 +202,7 @@ function generate_coupons!(bond::CouponBond)
             continue
         end
         period_days = (day - prev_date).value
-        coupon_amt = bond.coupon_rate * (period_days / 365.25) * bond.face_value
+        coupon_amt = bond.coupon_rate * (period_days / day_count("ACT_36525")) * bond.face_value
         if coupon_amt > 0.0
             push!(bond.coupons, Coupon(day, coupon_amt))
         end

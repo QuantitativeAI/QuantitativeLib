@@ -3,6 +3,7 @@ module SwapPricing
 
 using Dates
 using ..Pricers: Pricer
+using ..SystemConfig: day_count
 
 export Payment, SwapLeg, Swap, SettledPayment
 export StandardSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer
@@ -27,7 +28,7 @@ struct Payment
             days = count_days(start_date, end_date)
         end
 
-        amount = (notional * rate * days) / 365.0
+        amount = (notional * rate * days) / day_count("ACT_365")
 
         return new(date, amount, convention)
     end
@@ -104,7 +105,7 @@ end
 # Helper function to calculate time to maturity (in years)
 function time_to_maturity(date::Date, maturity_date::Date)::Float64
     @assert maturity_date >= date "maturity_date must be on or after date"
-    return (maturity_date - date).value / 365.0
+    return (maturity_date - date).value / day_count("ACT_365")
 end
 
 # Hull-White model pricer for interest rate swaps.
@@ -149,9 +150,9 @@ end
 function _lookup_discount_factor(discount_curve::Vector{Tuple{Date, Float64}},
                                 date::Date, valuation_date::Date)::Float64
     # Build tenor / log-DF arrays once per call; acceptable for demo-scale curves.
-    ts = [(d - valuation_date).value / 365.0 for (d, _) in discount_curve]
+    ts = [(d - valuation_date).value / day_count("ACT_365") for (d, _) in discount_curve]
     lndf = [log(df) for (_, df) in discount_curve]
-    t = (date - valuation_date).value / 365.0
+    t = (date - valuation_date).value / day_count("ACT_365")
 
     if t <= ts[1]
         return exp(lndf[1])   # flat extrapolation at the short end
@@ -246,7 +247,7 @@ function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float
 
     # Floating leg: accrue from the last payment date before (or on) settlement
     # up to the settlement date, prorated against the full period.
-    # payment.amount = notional * rate * period_days / 365, so the rate per day is
+    # payment.amount = notional * rate * period_days / day_count, so the rate per day is
     # payment.amount / period_days / notional. We multiply by adjusted_notional.
     prev_date = swap.start_date
     for payment in swap.floating_leg.payments
@@ -255,7 +256,7 @@ function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float
             period_days = (payment.date - prev_date).value
             rate_per_day = payment.amount / period_days / swap.notional
             adjusted_amount = adjusted_notional * rate_per_day * accrued_days +
-                              adjusted_notional * swap.spread * accrued_days / 365.0
+                              adjusted_notional * swap.spread * accrued_days / day_count("ACT_365")
             if adjusted_amount > 0
                 push!(settled, SettledPayment(payment, adjusted_amount))
             end

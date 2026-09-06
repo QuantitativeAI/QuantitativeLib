@@ -1,0 +1,30 @@
+# QuantitativeLib — system configuration
+#
+# All magic-number constants live here. To change a convention or precision
+# setting, edit this file and restart Julia.
+
+# ─────────────────────────────────────────────
+# Day-count conventions
+# ─────────────────────────────────────────────
+[day_counts]
+ACT_365   = 365.0      # actual/365  — standard for government bonds
+ACT_360   = 360.0      # actual/360  — standard for money-market & swaps
+ACT_36525 = 365.25     # actual/365.25 — used in some coupon calculations
+DE300_D   = 360.0      # 30/360 (DE300/EU30-360)
+
+# ─────────────────────────────────────────────
+# Defaults
+# ─────────────────────────────────────────────
+[defaults]
+default_day_count   = "ACT_365"
+default_digits      = 8
+trading_days_year   = 252
+
+# ─────────────────────────────────────────────
+# Curve defaults
+# ─────────────────────────────────────────────
+[curve_defaults]
+day_count   = "ACT_365"
+currency    = "USD"
+name        = "GenericCurve"
+interpolator = "Linear"   # "Linear" or "CubicSpline"

@@ -2,6 +2,10 @@ module QuantitativeLib
 
 export QuantitativeCore, Pricers, Instruments
 
+include("./SystemConfig.jl")
+using .SystemConfig
+export Config
+
 include("./QuantitativeCore.jl")
 
 using .QuantitativeCore  # Bring the submodule's contents into the main scope
@@ -36,5 +40,8 @@ include("./SwapPricing.jl")
 include("./MonteCarloPricing.jl")
 using .MonteCarloPricing
 export colwise_simulate_stock_prices, priceCallOption, priceCallOptionBroadcasted
+
+# Re-export SystemConfig accessors at top level for convenience
+export day_count, default_digits, trading_days_year, default_day_count, curve_day_count
 
 end

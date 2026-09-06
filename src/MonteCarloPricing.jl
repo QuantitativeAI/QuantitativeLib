@@ -7,13 +7,9 @@ using Random
 using Statistics
 
 using ..Instruments: Option
+using ..SystemConfig: trading_days_year
 
 export colwise_simulate_stock_prices, priceCallOption, priceCallOptionBroadcasted
-
-"""
-Constants
-"""
-const TRADING_DAYS_PER_YEAR = 252
 
 """
 Simulate stock prices using Geometric Brownian Motion (GBM).
@@ -37,7 +33,7 @@ function colwise_simulate_stock_prices(
 )::AbstractArray{Float64, 2}
 
     Random.seed!()
-    dt = 1 / TRADING_DAYS_PER_YEAR
+    dt = 1.0 / trading_days_year()
     prices = zeros(Float64, num_simulations, total_days)
     prices[:, 1] .= initial_price
 

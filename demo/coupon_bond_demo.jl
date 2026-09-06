@@ -113,7 +113,7 @@ println("  " * lpad("Rate", 8) * "  " * lpad("Price", 12) * "  " * lpad("Chg", 1
 println("  " * "-" ^ 35)
 for dr in [0.02, 0.03, 0.04, 0.046, 0.05, 0.06, 0.07]
     p = price(BondPricer(bond, dr, ContinuousInterest()))
-   chg = round(p - price_c, digits=4)
+    chg = round(p - price_c, digits=4)
     sign_str = chg > 0 ? "+" : ""
     println("  $(round(dr * 100, digits=1))%      $(round(p, digits=4))  $(sign_str)$(round(chg, digits=4))")
 end

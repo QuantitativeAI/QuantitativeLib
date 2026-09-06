@@ -5,6 +5,7 @@ module Curves
 using Dates
 
 using ..Instruments: Bond, ZeroCouponBond, CouponBond
+using ..SystemConfig: day_count
 
 export InterestCurve, ZeroCurve
 export tenor, zero_rate, discount_factor, forward_rate
@@ -14,11 +15,7 @@ export make_curve, get_rate, get_discount_factor, get_forward_rate
 export RateType, RateNode, yearfrac, VolSurface, interpolate_vol
 export YieldCurve, ForwardCurve, DiscountCurve, BasisCurve, CreditCurve
 
-"""
-Day-count convention used throughout the curve: actual/365, matching
-`Pricers.bond_tenor` and `Pricers.discount_factor`.
-"""
-const DAY_COUNT::Float64 = 365.0
+
 
 # ─────────────────────────────────────────────
 # Abstract Curve Hierarchy
@@ -214,15 +211,15 @@ end
 function yearfrac(as_of::Date, target::Date; convention::String = "ACT/360")
     days = Dates.value(target - as_of)
     if convention == "ACT/360"
-        return days / 360.0
+        return days / day_count("ACT_360")
     elseif convention == "ACT/365"
-        return days / 365.0
+        return days / day_count("ACT_365")
     elseif convention == "30/360"
         y1, m1, d1 = Dates.year(as_of), Dates.month(as_of), Dates.day(as_of)
         y2, m2, d2 = Dates.year(target), Dates.month(target), Dates.day(target)
-        return ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) / 360.0
+        return ((y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)) / day_count("DE300_D")
     else
-        return days / 365.0
+        return days / day_count("ACT_365")
     end
 end
 
@@ -354,7 +351,7 @@ function make_curve(
     interp_method::Type{<:AbstractInterpolation} = Linear,
     name::String = "GenericCurve"
 )
-    nodes = [RateNode(as_of, d, yearfrac(as_of, d), r, rate_type, day_count, "internal")
+    nodes = [RateNode(as_of, d, yearfrac(as_of, d; convention = day_count), r, rate_type, day_count, "internal")
              for (d, r) in zip(dates, rates)]
 
     # Build interpolation from year fractions and rates
@@ -603,7 +600,7 @@ function bootstrap_zero_curve(issue_date::Date, quotes::Vector{BondQuote})::Zero
         df = (bq.price - prior_pv) / terminal
         @assert df > 0.0 "Price ($(bq.price)) is not above the present value of the prior cash flows; the implied discount factor must be positive"
 
-        t = (bond.maturity - issue_date).value / DAY_COUNT
+        t = (bond.maturity - issue_date).value / day_count("ACT_365")
         push!(nodes, (bond.maturity, -log(df) / t))
         prev_maturity = bond.maturity
     end
@@ -626,7 +623,7 @@ function bootstrap_yield_curve(
 )
     # Step 1: Build short-end from deposits
     deposit_dates = [as_of + Year(tenor) for tenor in deposit_tenors]
-    deposit_dfs = [1.0 / (1.0 + r * t) for (r, t) in zip(deposit_rates, deposit_tenors ./ 360)]
+    deposit_dfs = [1.0 / (1.0 + r * t) for (r, t) in zip(deposit_rates, deposit_tenors ./ day_count("ACT_360"))]
 
     # Step 2: Bootstrap swaps (simplified)
     all_dates = vcat(deposit_dates, [as_of + Year(t) for t in swap_tenors])

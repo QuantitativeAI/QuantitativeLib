@@ -2,6 +2,7 @@
 module Pricers
 
 using ..Instruments: Bond, ZeroCouponBond, CouponBond
+using ..SystemConfig: day_count
 
 using Dates
 
@@ -106,10 +107,10 @@ maturity_date(b::Bond)::Date = b.maturity
 start_date(b::Bond)::Date = b.issue_date
 
 """
-Time to maturity in years, using an actual/365 day-count convention.
+Time to maturity in years, using the configured day-count convention.
 """
 function bond_tenor(p::BondPricer)::Float64
-    return (maturity_date(p) - start_date(p)).value / 365.0
+    return (maturity_date(p) - start_date(p)).value / day_count("ACT_365")
 end
 
 """
@@ -117,7 +118,7 @@ Discount factor from the bond's start date to `date`, using the pricer's
 compounding mode.
 """
 function discount_factor(p::BondPricer, date::Date)::Float64
-    t = (date - start_date(p)).value / 365.0
+    t = (date - start_date(p)).value / day_count("ACT_365")
     return discount_factor(p.discount_rate, t, p.interest)
 end
 

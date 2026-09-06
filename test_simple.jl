@@ -43,6 +43,6 @@ option_price = QuantitativeLib.priceCallOptionBroadcasted(prices, 0.05, 10/252, 
 println("   ✓ Option pricing works")
 println("   ✓ Option price: $option_price")
 
-println("\n"|"="^60)
+println("\n" * "="^60)
 println("All tests passed! ✓")
 println("="^60)

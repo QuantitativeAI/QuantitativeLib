@@ -6,6 +6,7 @@
 
 using QuantitativeLib
 using QuantitativeLib.Instruments: Option
+using QuantitativeLib.SystemConfig: trading_days_year
 using Dates
 
 println("="^60)
@@ -32,7 +33,7 @@ println("  Dividend Yield:   $(option.dividend_yield)")
 
 # Calculate time to maturity in trading days
 days_to_maturity = (option.expiry_date - Date(2026, 9, 4)).value
-trading_days = Int(floor(days_to_maturity * 252 / 365))
+trading_days = Int(floor(days_to_maturity * trading_days_year() / 365))
 
 println("\nTime to Maturity:")
 println("  Calendar Days:    $days_to_maturity")
@@ -59,18 +60,17 @@ println("\nPricing with broadcasting...")
 option_price_bc = QuantitativeLib.priceCallOptionBroadcasted(
     prices,
     option.risk_free_rate,
-    trading_days / 252.0,
+    trading_days / trading_days_year(),
     option.strike_price
 )
 
 println("  Monte Carlo Price: $(option_price_bc)")
 
-# Price the option using threading
-println("\nPricing with threading...")
+# Price the option using threading...
 option_price_threaded = QuantitativeLib.priceCallOption(
     prices,
     option.risk_free_rate,
-    trading_days / 252.0,
+    trading_days / trading_days_year(),
     option.strike_price
 )
 
@@ -99,7 +99,7 @@ option2 = Option(
 )
 
 days2 = (option2.expiry_date - Date(2026, 9, 4)).value
-trading_days2 = Int(floor(days2 * 252 / 365))
+trading_days2 = Int(floor(days2 * trading_days_year() / 365))
 
 prices2 = QuantitativeLib.colwise_simulate_stock_prices(
     option2.underlying_price,
@@ -112,7 +112,7 @@ prices2 = QuantitativeLib.colwise_simulate_stock_prices(
 option_price2 = QuantitativeLib.priceCallOptionBroadcasted(
     prices2,
     option2.risk_free_rate,
-    trading_days2 / 252.0,
+    trading_days2 / trading_days_year(),
     option2.strike_price
 )
 
