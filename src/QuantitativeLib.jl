@@ -24,6 +24,12 @@ using .Curves
 export InterestCurve, ZeroCurve
 export tenor, zero_rate, discount_factor, forward_rate
 export BondQuote, cash_flows, bootstrap_zero_curve
+export AbstractInterpolation, Linear, CubicSpline
+export make_curve, get_rate, get_discount_factor, get_forward_rate
+export RateType, RateNode, yearfrac, VolSurface
+export ZeroRate, ForwardRate, DiscountFactor, SwapRate, LiborRate, SofrRate
+export YieldCurve, ForwardCurve, DiscountCurve, BasisCurve, CreditCurve
+export interpolate_vol, bootstrap_yield_curve
 
 include("./SwapPricing.jl")
 
