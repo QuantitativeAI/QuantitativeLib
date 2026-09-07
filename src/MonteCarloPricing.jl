@@ -32,7 +32,8 @@ function colwise_simulate_stock_prices(
     num_simulations::Int64
 )::AbstractArray{Float64, 2}
 
-    Random.seed!()
+    #Random.seed!()
+    random_rng = Xoshiro()
     dt = 1.0 / trading_days_year()
     prices = zeros(Float64, num_simulations, total_days)
     prices[:, 1] .= initial_price
@@ -42,7 +43,7 @@ function colwise_simulate_stock_prices(
 
     for col in 1:num_simulations
         for row in 2:total_days
-            epsilon = randn()
+            epsilon = rand(random_rng) # randn()
             prices[col, row] = prices[col, row-1] * exp(drift_term_multiplier + volatility_term_multiplier * epsilon)
         end
     end
