@@ -264,7 +264,7 @@ Tenor in years from the curve's issue date to `date`, using an actual/365
 day-count convention.
 """
 function tenor(c::ZeroCurve, date::Date)::Float64
-    return (date - c.issue_date).value / DAY_COUNT
+    return (date - c.issue_date).value / day_count("ACT_365")
 end
 
 """
@@ -320,7 +320,7 @@ actual/365 year fraction of the period.
 """
 function forward_rate(c::ZeroCurve, start_date::Date, end_date::Date)::Float64
     @assert start_date < end_date "Start date must be before the end date"
-    τ = (end_date - start_date).value / DAY_COUNT
+    τ = (end_date - start_date).value / day_count("ACT_365")
     return (discount_factor(c, start_date) / discount_factor(c, end_date) - 1.0) / τ
 end
 
