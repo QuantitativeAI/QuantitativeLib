@@ -4,7 +4,6 @@
 
 using Dates
 using Interpolations
-using Printf
 
 # ─────────────────────────────────────────────
 # Date & Rate Primitives
