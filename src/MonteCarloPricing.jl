@@ -96,11 +96,22 @@ Price call option with manual threading (for comparison).
 """
 function priceCallOption(stockPrices::AbstractArray{Float64, 2}, r::Float64, T::Float64, strike::Float64)::Float64
     fac = exp(-r * T)
-    payoff = zeros(size(stockPrices, 2))
-    Threads.@threads for col in eachcol(stockPrices)
-        payoff[Threads.threadid()] = f(col, strike)
+    n = size(stockPrices, 2)
+    nt = Threads.nthreads()
+    # Give each thread a contiguous block of columns to avoid any shared writes.
+    chunk = div(n, nt)
+    remainder = mod(n, nt)
+    thread_payoffs = Vector{Float64}(undef, nt)
+    Threads.@threads for tid in 1:nt
+        start_col = (tid - 1) * chunk + min(tid, remainder) + 1
+        end_col = tid * chunk + min(tid, remainder)
+        acc = 0.0
+        for col in start_col:end_col
+            acc += f(@view(stockPrices[:, col]), strike)
+        end
+        thread_payoffs[tid] = acc
     end
-    return fac * mean(payoff)
+    return fac * sum(thread_payoffs) / n
 end
 
 end # module MonteCarloPricing
