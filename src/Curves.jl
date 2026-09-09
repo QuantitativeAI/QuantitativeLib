@@ -260,11 +260,11 @@ struct ZeroCurve <: InterestCurve
 end
 
 """
-Tenor in years from the curve's issue date to `date`, using an actual/365
-day-count convention.
+Tenor in years from the curve's issue date to `date`, using the given
+day-count convention, default ACT/365.
 """
-function tenor(c::ZeroCurve, date::Date)::Float64
-    return (date - c.issue_date).value / day_count("ACT_365")
+function tenor(c::ZeroCurve, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
+    return (date - c.issue_date).value / day_count
 end
 
 """
@@ -273,24 +273,24 @@ Interpolated continuously compounded zero rate for maturity `date`.
 The zero rate is defined as `-log(discount_factor)/tenor`; at zero tenor it is
 the first node's rate.
 """
-function zero_rate(c::ZeroCurve, date::Date)::Float64
-    t = tenor(c, date)
+function zero_rate(c::ZeroCurve, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
+    t = tenor(c, date; day_count=day_count)
     if t <= 0.0
         return c.nodes[1][2]
     end
-    return -log(discount_factor(c, date)) / t
+    return -log(discount_factor(c, date; day_count=day_count)) / t
 end
 
 """
 Discount factor from the curve's issue date to `date`.
 """
-function discount_factor(c::ZeroCurve, date::Date)::Float64
-    t = tenor(c, date)
+function discount_factor(c::ZeroCurve, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
+    t = tenor(c, date; day_count=day_count)
     @assert t >= 0.0 "Date must be on or after the curve issue date"
 
     nodes = c.nodes
     n = length(nodes)
-    ts = [tenor(c, d) for (d, _) in nodes]
+    ts = [tenor(c, d; day_count=day_count) for (d, _) in nodes]
     lndf = [ -z * ti for ((_, z), ti) in zip(nodes, ts) ]
 
     if t <= ts[1]
@@ -316,12 +316,12 @@ end
 Simple forward rate implied by the curve between `start_date` and `end_date`,
 i.e. the rate `f` such that
 `discount_factor(start) = (1 + f * τ) * discount_factor(end)`, with `τ` the
-actual/365 year fraction of the period.
+year fraction of the period under the given day-count convention (default ACT/365).
 """
-function forward_rate(c::ZeroCurve, start_date::Date, end_date::Date)::Float64
+function forward_rate(c::ZeroCurve, start_date::Date, end_date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
     @assert start_date < end_date "Start date must be before the end date"
-    τ = (end_date - start_date).value / day_count("ACT_365")
-    return (discount_factor(c, start_date) / discount_factor(c, end_date) - 1.0) / τ
+    τ = (end_date - start_date).value / day_count
+    return (discount_factor(c, start_date; day_count=day_count) / discount_factor(c, end_date; day_count=day_count) - 1.0) / τ
 end
 
 # ─────────────────────────────────────────────
@@ -566,7 +566,7 @@ only on the nodes already pinned, so no linear solver is required.
 # Returns
 - `ZeroCurve(issue_date, nodes)` with one node at each bond's maturity.
 """
-function bootstrap_zero_curve(issue_date::Date, quotes::Vector{BondQuote})::ZeroCurve
+function bootstrap_zero_curve(issue_date::Date, quotes::Vector{BondQuote}; day_count::Float64 = day_count("ACT_365"))::ZeroCurve
     @assert !isempty(quotes) "At least one bond quote is required"
 
     nodes = Tuple{Date, Float64}[]
@@ -591,7 +591,7 @@ function bootstrap_zero_curve(issue_date::Date, quotes::Vector{BondQuote})::Zero
             partial = ZeroCurve(issue_date, nodes)
             for (date, amount) in cfs
                 if date < bond.maturity
-                    prior_pv += amount * discount_factor(partial, date)
+                    prior_pv += amount * discount_factor(partial, date; day_count=day_count)
                 end
             end
         end
@@ -600,7 +600,7 @@ function bootstrap_zero_curve(issue_date::Date, quotes::Vector{BondQuote})::Zero
         df = (bq.price - prior_pv) / terminal
         @assert df > 0.0 "Price ($(bq.price)) is not above the present value of the prior cash flows; the implied discount factor must be positive"
 
-        t = (bond.maturity - issue_date).value / day_count("ACT_365")
+        t = (bond.maturity - issue_date).value / day_count
         push!(nodes, (bond.maturity, -log(df) / t))
         prev_maturity = bond.maturity
     end
@@ -619,11 +619,12 @@ function bootstrap_yield_curve(
     swap_rates::Vector{Float64},
     swap_tenors::Vector{Int};
     currency::String = "USD",
-    interp_method::Type{Linear} = Linear
+    interp_method::Type{Linear} = Linear,
+    day_count::Float64 = day_count("ACT_360")
 )
     # Step 1: Build short-end from deposits
     deposit_dates = [as_of + Year(tenor) for tenor in deposit_tenors]
-    deposit_dfs = [1.0 / (1.0 + r * t) for (r, t) in zip(deposit_rates, deposit_tenors ./ day_count("ACT_360"))]
+    deposit_dfs = [1.0 / (1.0 + r * t) for (r, t) in zip(deposit_rates, deposit_tenors ./ day_count)]
 
     # Step 2: Bootstrap swaps (simplified)
     all_dates = vcat(deposit_dates, [as_of + Year(t) for t in swap_tenors])

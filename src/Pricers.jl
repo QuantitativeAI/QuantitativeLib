@@ -107,18 +107,18 @@ maturity_date(b::Bond)::Date = b.maturity
 start_date(b::Bond)::Date = b.issue_date
 
 """
-Time to maturity in years, using the configured day-count convention.
+Time to maturity in years, using the given day-count convention, default ACT/365.
 """
-function bond_tenor(p::BondPricer)::Float64
-    return (maturity_date(p) - start_date(p)).value / day_count("ACT_365")
+function bond_tenor(p::BondPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    return (maturity_date(p) - start_date(p)).value / day_count
 end
 
 """
 Discount factor from the bond's start date to `date`, using the pricer's
 compounding mode.
 """
-function discount_factor(p::BondPricer, date::Date)::Float64
-    t = (date - start_date(p)).value / day_count("ACT_365")
+function discount_factor(p::BondPricer, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
+    t = (date - start_date(p)).value / day_count
     return discount_factor(p.discount_rate, t, p.interest)
 end
 
@@ -126,8 +126,8 @@ end
 Discount factor from the start date to maturity, using the pricer's
 compounding mode.
 """
-function discount_factor(p::BondPricer)::Float64
-    return discount_factor(p, maturity_date(p))
+function discount_factor(p::BondPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    return discount_factor(p, maturity_date(p); day_count=day_count)
 end
 
 """
@@ -148,8 +148,8 @@ end
 Price a zero-coupon bond as the present value of its face value discounted
 back to the start date: `price = face_value * discount_factor`.
 """
-function price(b::ZeroCouponBond, p::BondPricer)::Float64
-    return b.face_value * discount_factor(p, b.maturity)
+function price(b::ZeroCouponBond, p::BondPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    return b.face_value * discount_factor(p, b.maturity; day_count=day_count)
 end
 
 """
@@ -157,7 +157,7 @@ Price a coupon bond as the sum of each coupon payment discounted back to the
 start date, plus the face value discounted back to the start date at maturity:
 `price = Σ coupon.amount * discount_factor(coupon.date) + face_value * discount_factor(maturity)`.
 """
-function price(b::CouponBond, p::BondPricer)::Float64
+function price(b::CouponBond, p::BondPricer; day_count::Float64 = day_count("ACT_365"))::Float64
     @assert start_date(p) <= b.maturity "Maturity must be on or after start date"
     for coupon in b.coupons
         @assert start_date(p) <= coupon.date <= b.maturity "Coupon date must be between start and maturity"
@@ -165,16 +165,16 @@ function price(b::CouponBond, p::BondPricer)::Float64
 
     pv = 0.0
     for coupon in b.coupons
-        pv += coupon.amount * discount_factor(p, coupon.date)
+        pv += coupon.amount * discount_factor(p, coupon.date; day_count=day_count)
     end
-    return pv + b.face_value * discount_factor(p, b.maturity)
+    return pv + b.face_value * discount_factor(p, b.maturity; day_count=day_count)
 end
 
 """
 Price the bond instrument held by the pricer, dispatching on the bond's type.
 """
-function price(p::BondPricer)::Float64
-    return price(p.bond, p)
+function price(p::BondPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    return price(p.bond, p; day_count=day_count)
 end
 
 end

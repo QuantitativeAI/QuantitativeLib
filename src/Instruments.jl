@@ -191,9 +191,9 @@ to the issue date is an anchor only (as produced by `add_periods`) and
 receives no coupon. The first coupon accrues from the issue date to the first
 payment date (which may be a short or long period), and each subsequent coupon
 accrues from the previous payment date to the current one, using an
-actual/365.25 day-count convention.
+actual/365.25 day-count convention by default (configurable via `day_count`).
 """
-function generate_coupons!(bond::CouponBond)
+function generate_coupons!(bond::CouponBond; day_count::Float64 = day_count("ACT_36525"))
     empty!(bond.coupons)
     prev_date = bond.issue_date
     for day in bond.payment_schedule.days
@@ -202,7 +202,7 @@ function generate_coupons!(bond::CouponBond)
             continue
         end
         period_days = (day - prev_date).value
-        coupon_amt = bond.coupon_rate * (period_days / day_count("ACT_36525")) * bond.face_value
+        coupon_amt = bond.coupon_rate * (period_days / day_count) * bond.face_value
         if coupon_amt > 0.0
             push!(bond.coupons, Coupon(day, coupon_amt))
         end

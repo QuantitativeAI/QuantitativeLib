@@ -16,7 +16,8 @@ struct Payment
     convention::String
 
     function Payment(date::Date, notional::Float64, rate::Float64,
-                     start_date::Date, end_date::Date, convention::String)
+                     start_date::Date, end_date::Date, convention::String;
+                     day_count::Float64 = day_count("ACT_365"))
 
         if convention == "ACTUAL_ACTUAL"
             days = count_days(start_date, end_date)
@@ -28,7 +29,7 @@ struct Payment
             days = count_days(start_date, end_date)
         end
 
-        amount = (notional * rate * days) / day_count("ACT_365")
+        amount = (notional * rate * days) / day_count
 
         return new(date, amount, convention)
     end
@@ -103,9 +104,9 @@ struct Swap
 end
 
 # Helper function to calculate time to maturity (in years)
-function time_to_maturity(date::Date, maturity_date::Date)::Float64
+function time_to_maturity(date::Date, maturity_date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
     @assert maturity_date >= date "maturity_date must be on or after date"
-    return (maturity_date - date).value / day_count("ACT_365")
+    return (maturity_date - date).value / day_count
 end
 
 # Hull-White model pricer for interest rate swaps.
@@ -148,11 +149,12 @@ end
 # log-linear interpolation between nodes.  Extrapolates flat before the
 # first node and flat at the last segment's forward rate after the last.
 function _lookup_discount_factor(discount_curve::Vector{Tuple{Date, Float64}},
-                                date::Date, valuation_date::Date)::Float64
+                                date::Date, valuation_date::Date;
+                                day_count::Float64 = day_count("ACT_365"))::Float64
     # Build tenor / log-DF arrays once per call; acceptable for demo-scale curves.
-    ts = [(d - valuation_date).value / day_count("ACT_365") for (d, _) in discount_curve]
+    ts = [(d - valuation_date).value / day_count for (d, _) in discount_curve]
     lndf = [log(df) for (_, df) in discount_curve]
-    t = (date - valuation_date).value / day_count("ACT_365")
+    t = (date - valuation_date).value / day_count
 
     if t <= ts[1]
         return exp(lndf[1])   # flat extrapolation at the short end
@@ -174,21 +176,21 @@ function _lookup_discount_factor(discount_curve::Vector{Tuple{Date, Float64}},
 end
 
 for PricerType in (StandardSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer)
-    @eval function discount_factor(pricer::$PricerType, date::Date)::Float64
-        return _lookup_discount_factor(pricer.discount_curve, date, pricer.discount_curve[1][1])
+    @eval function discount_factor(pricer::$PricerType, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
+        return _lookup_discount_factor(pricer.discount_curve, date, pricer.discount_curve[1][1]; day_count=day_count)
     end
 end
 
 """
 Calculates present value of a swap leg's payments using the pricer's discount curve.
 """
-function present_value(payments::AbstractVector{T}, pricer::Pricer)::Float64 where {T<:Union{Payment, SettledPayment}}
+function present_value(payments::AbstractVector{T}, pricer::Pricer; day_count::Float64 = day_count("ACT_365"))::Float64 where {T<:Union{Payment, SettledPayment}}
     pv = 0.0
 
     for payment in payments
         date = payment isa Payment ? payment.date : payment.original_payment.date
         amount = payment isa Payment ? payment.amount : payment.adjusted_amount
-        df = discount_factor(pricer, date)
+        df = discount_factor(pricer, date; day_count=day_count)
         pv += amount * df
     end
 
@@ -202,12 +204,12 @@ The fixed leg's `payment.amount` already embeds the notional
 (`notional * rate * days / 365`), so we divide by notional to obtain
 the rate itself.
 """
-function par_rate(swap::Swap, pricer::Pricer)::Float64
+function par_rate(swap::Swap, pricer::Pricer; day_count::Float64 = day_count("ACT_365"))::Float64
     sum_df = 0.0
     sum_amount_df = 0.0
 
     for payment in swap.fixed_leg.payments
-        df = discount_factor(pricer, payment.date)
+        df = discount_factor(pricer, payment.date; day_count=day_count)
         sum_df += df
         sum_amount_df += (payment.amount / swap.notional) * df
     end
@@ -222,13 +224,13 @@ discounted fixed-leg cash flows measured from the swap's start date.
 True modified duration would divide this by (1 + yield), but for a
 par swap the yield ≈ par_rate, so callers can adjust as needed.
 """
-function modified_duration(swap::Swap, pricer::Pricer)::Float64
+function modified_duration(swap::Swap, pricer::Pricer; day_count::Float64 = day_count("ACT_365"))::Float64
     sum_tdf = 0.0
     sum_df = 0.0
 
     for payment in swap.fixed_leg.payments
-        df = discount_factor(pricer, payment.date)
-        t = time_to_maturity(swap.start_date, payment.date)
+        df = discount_factor(pricer, payment.date; day_count=day_count)
+        t = time_to_maturity(swap.start_date, payment.date; day_count=day_count)
         sum_tdf += (t * df)
         sum_df += df
     end
@@ -239,9 +241,10 @@ end
 """
 Implements cash settlement for early termination.
 Returns the remaining payments of both legs as SettledPayment objects, with
-amounts accrued up to the settlement date on an ACT/365 basis.
+amounts accrued up to the settlement date on an ACT/365 basis by default
+(configurable via `day_count`).
 """
-function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float64)
+function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float64; day_count::Float64 = day_count("ACT_365"))
 
     settled = Vector{SettledPayment}()
 
@@ -256,7 +259,7 @@ function settle_swap(swap::Swap, settlement_date::Date, adjusted_notional::Float
             period_days = (payment.date - prev_date).value
             rate_per_day = payment.amount / period_days / swap.notional
             adjusted_amount = adjusted_notional * rate_per_day * accrued_days +
-                              adjusted_notional * swap.spread * accrued_days / day_count("ACT_365")
+                              adjusted_notional * swap.spread * accrued_days / day_count
             if adjusted_amount > 0
                 push!(settled, SettledPayment(payment, adjusted_amount))
             end
