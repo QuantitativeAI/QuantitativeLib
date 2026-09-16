@@ -17,7 +17,7 @@
 
 module PortfolioMgr
 
-using Dates: Date
+using Dates: Date, today
 using ..QuantitativeCore: InstrumentCalendar, PeriodDays
 using ..Instruments: Instrument, Bond, ZeroCouponBond, CouponBond
 using ..SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer, present_value
