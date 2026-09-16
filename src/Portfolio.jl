@@ -24,6 +24,7 @@ using ..SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer, present_value
 using ..Curves: ZeroCurve, discount_factor as curve_discount_factor, tenor
 import ..Curves: cash_flows  # extend the existing function with portfolio/swap methods
 using ..SystemConfig: day_count
+using Serialization: jldump, load
 
 export AbstractPortfolio, Portfolio, Holding
 export add_instrument!, remove_instrument!, holdings
@@ -31,6 +32,10 @@ export market_value
 export duration, convexity, key_rate_durations, macaulay_duration
 export shifted_curve, parallel_shifted_curve
 export portfolio_yield, expected_return
+export PortfolioScenario, portfolio, valuation_curve, projected_curve, scenario_horizon, forward_curve
+export scenario_value, scenario_yield, scenario_duration, scenario_convexity,
+       scenario_key_rate_durations, scenario_return, scenario_summary
+export save_scenario, load_scenario, compare_scenarios, scenario_table
 
 # ---------------------------------------------------------------------------
 # Types
@@ -369,6 +374,229 @@ function expected_return(p::AbstractPortfolio, curve::ZeroCurve, horizon::Date;
         v_h += amount * df_d / df_h
     end
     return v_h / v0 - 1.0
+end
+
+# ---------------------------------------------------------------------------
+# Scenarios: a portfolio pinned to a valuation curve and (optionally) a
+# projected curve, so that different curve assumptions for the same holdings
+# can be stored, saved, and compared.
+# ---------------------------------------------------------------------------
+
+"""
+A named valuation scenario: one portfolio, one valuation curve, and an
+optional *projected* curve.
+
+The valuation curve is the curve the portfolio is worth against **today**
+(it anchors all spot metrics: value, yield, duration, convexity, KRDs). The
+projected curve is the curve expected to hold at the horizon; it drives the
+forward-looking `scenario_return`. When no projected curve is given, the
+valuation curve is used for the return as well (the curve-consistent
+risk-free return over the horizon).
+
+The scenario holds a reference to the `Portfolio`, so holdings added to the
+portfolio after construction are reflected in later valuations.
+"""
+struct PortfolioScenario
+    name::String
+    portfolio::Portfolio
+    valuation_curve::ZeroCurve
+    projected_curve::Union{ZeroCurve, Nothing}
+    horizon::Date
+
+    function PortfolioScenario(name::String,
+                               portfolio::Portfolio,
+                               valuation_curve::ZeroCurve,
+                               projected_curve::Union{ZeroCurve, Nothing} = nothing;
+                               horizon::Date = Date(today()))
+        @assert horizon >= portfolio.valuation_date "Horizon must be on or after the portfolio's valuation date"
+        return new(name, portfolio, valuation_curve, projected_curve, horizon)
+    end
+end
+
+"""The portfolio held by the scenario."""
+portfolio(s::PortfolioScenario)::Portfolio = s.portfolio
+
+"""The curve the portfolio is valued against today."""
+valuation_curve(s::PortfolioScenario)::ZeroCurve = s.valuation_curve
+
+"""The projected curve at the horizon, or `nothing` if not set."""
+projected_curve(s::PortfolioScenario)::Union{ZeroCurve, Nothing} = s.projected_curve
+
+"""The horizon date of the scenario."""
+scenario_horizon(s::PortfolioScenario)::Date = s.horizon
+
+"""
+The curve used for the scenario's forward-looking return: the projected
+curve when set, otherwise the valuation curve.
+"""
+function forward_curve(s::PortfolioScenario)::ZeroCurve
+    return s.projected_curve !== nothing ? s.projected_curve : s.valuation_curve
+end
+
+"""
+Market value of the scenario's portfolio on its valuation curve.
+"""
+function scenario_value(s::PortfolioScenario; day_count::Float64 = day_count("ACT_365"))::Float64
+    return market_value(s.portfolio, s.valuation_curve; day_count=day_count)
+end
+
+"""
+Portfolio yield on the scenario's valuation curve.
+"""
+function scenario_yield(s::PortfolioScenario; day_count::Float64 = day_count("ACT_365"))::Float64
+    return portfolio_yield(s.portfolio, s.valuation_curve; day_count=day_count)
+end
+
+"""
+Portfolio duration on the scenario's valuation curve (see `duration`).
+"""
+function scenario_duration(s::PortfolioScenario; shift::Float64 = 1e-4, day_count::Float64 = day_count("ACT_365"))::Float64
+    return duration(s.portfolio, s.valuation_curve; shift=shift, day_count=day_count)
+end
+
+"""
+Portfolio convexity on the scenario's valuation curve (see `convexity`).
+"""
+function scenario_convexity(s::PortfolioScenario; shift::Float64 = 1e-4, day_count::Float64 = day_count("ACT_365"))::Float64
+    return convexity(s.portfolio, s.valuation_curve; shift=shift, day_count=day_count)
+end
+
+"""
+Key-rate durations on the scenario's valuation curve (see `key_rate_durations`).
+"""
+function scenario_key_rate_durations(s::PortfolioScenario; day_count::Float64 = day_count("ACT_365"))::Vector{Float64}
+    return key_rate_durations(s.portfolio, s.valuation_curve; day_count=day_count)
+end
+
+"""
+Baseline return over the scenario's horizon, valued on the scenario's
+`forward_curve` (projected curve if set, else valuation curve).
+
+This is the number that differs between scenarios that share the same
+portfolio but use different projected curves.
+"""
+function scenario_return(s::PortfolioScenario; day_count::Float64 = day_count("ACT_365"))::Float64
+    return expected_return(s.portfolio, forward_curve(s), s.horizon; day_count=day_count)
+end
+
+"""
+All spot metrics plus the forward return of a scenario, as a `NamedTuple`.
+
+The `krd` field is a vector with one entry per node of the valuation curve,
+so the number of KRDs differs across scenarios with different curve shapes.
+"""
+function scenario_summary(s::PortfolioScenario;
+                          day_count::Float64 = day_count("ACT_365"))::NamedTuple
+    return (
+        name = s.name,
+        value = scenario_value(s; day_count=day_count),
+        yield = scenario_yield(s; day_count=day_count),
+        duration = scenario_duration(s; day_count=day_count),
+        convexity = scenario_convexity(s; day_count=day_count),
+        krd = scenario_key_rate_durations(s; day_count=day_count),
+        projected_return = scenario_return(s; day_count=day_count),
+    )
+end
+
+# ---------------------------------------------------------------------------
+# Scenario persistence (stdlib Serialization — no new dependencies)
+# ---------------------------------------------------------------------------
+
+"""
+Save a scenario to `path` using Julia's stdlib `Serialization` format.
+
+The file is a binary Julia image; load it back with `load_scenario`.
+Only load files you trust, as `Serialization.load` evaluates the image.
+"""
+function save_scenario(path::AbstractString, s::PortfolioScenario)::Nothing
+    jldump(path, s)
+    return nothing
+end
+
+"""
+Load a scenario previously saved with `save_scenario`.
+"""
+function load_scenario(path::AbstractString)::PortfolioScenario
+    s = load(path)
+    @assert s isa PortfolioScenario "$path does not contain a PortfolioScenario (got $(typeof(s)))"
+    return s
+end
+
+# ---------------------------------------------------------------------------
+# Scenario comparison
+# ---------------------------------------------------------------------------
+
+const _SCENARIO_METRIC_KEYS = (:value, :yield, :duration, :convexity, :projected_return)
+
+"""
+Metric matrix for a set of scenarios: rows are
+`(:value, :yield, :duration, :convexity, :projected_return)`, columns are
+the scenarios in the given order. KRDs are excluded because their length
+depends on the curve's node count.
+
+Useful for comparing the same portfolio under different curve assumptions:
+scenarios with identical holdings but different valuation/projected curves.
+"""
+function compare_scenarios(ss::AbstractVector{PortfolioScenario};
+                           day_count::Float64 = day_count("ACT_365"))::Matrix{Float64}
+    @assert !isempty(ss) "No scenarios to compare"
+    m = Matrix{Float64}(undef, length(_SCENARIO_METRIC_KEYS), length(ss))
+    for (j, s) in enumerate(ss)
+        summary = scenario_summary(s; day_count=day_count)
+        for (i, key) in enumerate(_SCENARIO_METRIC_KEYS)
+            m[i, j] = getproperty(summary, key)
+        end
+    end
+    return m
+end
+
+"""
+A printable comparison table for a set of scenarios.
+
+Rows: value, yield, duration, convexity, projected return (and one row per
+KRD node, aligned when all scenarios share the same node dates). Columns:
+the scenario names.
+"""
+function scenario_table(ss::AbstractVector{PortfolioScenario};
+                        day_count::Float64 = day_count("ACT_365"))::String
+    @assert !isempty(ss) "No scenarios to compare"
+
+    summaries = [scenario_summary(s; day_count=day_count) for s in ss]
+    names = [summ.name for summ in summaries]
+
+    # Align KRD rows only when every scenario's valuation curve has the
+    # same node dates.
+    same_nodes = all(j -> ss[j].valuation_curve.nodes .== ss[1].valuation_curve.nodes, 2:length(ss))
+
+    header = lpad("Metric", 18)
+    for n in names
+        header *= "  " * rpad(n, 14)
+    end
+    sep = "-" ^ length(header)
+
+    rows = String[]
+    push!(rows, header, sep)
+
+    for (i, key) in enumerate(_SCENARIO_METRIC_KEYS)
+        line = lpad(string(key), 18)
+        for summ in summaries
+            line *= "  " * rpad("$(round(getproperty(summ, key), digits=6))", 14)
+        end
+        push!(rows, line)
+    end
+
+    if same_nodes
+        push!(rows, "-" ^ length(header))
+        for k in 1:length(ss[1].valuation_curve.nodes)
+            line = lpad("krd node $k", 18)
+            for summ in summaries
+                line *= "  " * rpad("$(round(summ.krd[k], digits=4))", 14)
+            end
+            push!(rows, line)
+        end
+    end
+
+    return join(rows, "\n")
 end
 
 end # module PortfolioMgr

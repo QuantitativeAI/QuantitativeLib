@@ -45,6 +45,10 @@ export holdings
 export market_value, duration, convexity, key_rate_durations, macaulay_duration
 export shifted_curve, parallel_shifted_curve
 export portfolio_yield, expected_return
+export PortfolioScenario, portfolio, valuation_curve, projected_curve, scenario_horizon, forward_curve
+export scenario_value, scenario_yield, scenario_duration, scenario_convexity,
+       scenario_key_rate_durations, scenario_return, scenario_summary
+export save_scenario, load_scenario, compare_scenarios, scenario_table
 
 include("./MonteCarloPricing.jl")
 using .MonteCarloPricing

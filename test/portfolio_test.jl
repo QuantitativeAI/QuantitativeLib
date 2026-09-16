@@ -171,4 +171,73 @@ using QuantitativeLib.Curves: bootstrap_zero_curve, BondQuote
     # -----------------------------------------------------------------------
     opt = QuantitativeLib.Option(100.0, 100.0, Date(2027, 1, 1), 0.2, 0.03, 0.0)
     @test_throws ErrorException QuantitativeLib.market_value(opt, curve)
+
+    # -----------------------------------------------------------------------
+    # Scenarios: same portfolio, different (projected) curves
+    # -----------------------------------------------------------------------
+    proj_curve = QuantitativeLib.parallel_shifted_curve(curve, 0.01)
+
+    sc_no_proj = QuantitativeLib.PortfolioScenario("Flat", p, curve; horizon=horizon)
+    sc_proj = QuantitativeLib.PortfolioScenario("Steepened", p, curve, proj_curve; horizon=horizon)
+
+    # Accessors
+    @test QuantitativeLib.portfolio(sc_proj) === p
+    @test QuantitativeLib.valuation_curve(sc_proj) === curve
+    @test QuantitativeLib.projected_curve(sc_proj) === proj_curve
+    @test QuantitativeLib.projected_curve(sc_no_proj) === nothing
+    @test QuantitativeLib.scenario_horizon(sc_proj) == horizon
+    @test QuantitativeLib.forward_curve(sc_proj) === proj_curve
+    @test QuantitativeLib.forward_curve(sc_no_proj) === curve
+
+    # Spot metrics match the standalone functions on the valuation curve
+    @test QuantitativeLib.scenario_value(sc_proj) ≈ v_p
+    @test QuantitativeLib.scenario_yield(sc_proj) ≈ y
+    @test QuantitativeLib.scenario_duration(sc_proj) ≈ dur_num
+    @test QuantitativeLib.scenario_convexity(sc_proj) ≈ QuantitativeLib.convexity(p, curve)
+    @test QuantitativeLib.scenario_key_rate_durations(sc_proj) ≈ krd
+
+    # Projected return: with no projected curve this is the curve-consistent
+    # return on the valuation curve; with a projected curve it is driven by
+    # the projected curve, and a steeper (higher) curve gives a higher return.
+    @test QuantitativeLib.scenario_return(sc_no_proj) ≈ ret
+    expected_proj_ret = 1.0 / QuantitativeLib.discount_factor(proj_curve, horizon) - 1.0
+    @test QuantitativeLib.scenario_return(sc_proj) ≈ expected_proj_ret
+    @test QuantitativeLib.scenario_return(sc_proj) > QuantitativeLib.scenario_return(sc_no_proj)
+
+    # Summary NamedTuple carries all fields
+    summary = QuantitativeLib.scenario_summary(sc_proj)
+    @test summary.name == "Steepened"
+    @test summary.value ≈ v_p
+    @test summary.projected_return ≈ expected_proj_ret
+    @test length(summary.krd) == 3
+
+    # Comparison matrix: rows = (value, yield, duration, convexity, return)
+    m = QuantitativeLib.compare_scenarios([sc_no_proj, sc_proj])
+    @test size(m) == (5, 2)
+    @test m[1, 1] ≈ v_p
+    @test m[5, 1] ≈ ret
+    @test m[5, 2] ≈ expected_proj_ret
+
+    # Printable table contains both scenario names and the metric rows
+    table = QuantitativeLib.scenario_table([sc_no_proj, sc_proj])
+    @test occursin("Flat", table)
+    @test occursin("Steepened", table)
+    @test occursin("projected_return", table)
+    @test occursin("krd node 1", table)  # same node dates → KRD rows included
+
+    # Save / load round trip
+    path = tempname()
+    QuantitativeLib.save_scenario(path, sc_proj)
+    sc_loaded = QuantitativeLib.load_scenario(path)
+    rm(path)
+    @test sc_loaded.name == "Steepened"
+    @test sc_loaded.horizon == horizon
+    @test sc_loaded.valuation_curve.nodes == curve.nodes
+    @test sc_loaded.projected_curve !== nothing
+    @test sc_loaded.projected_curve.nodes == proj_curve.nodes
+    @test QuantitativeLib.scenario_return(sc_loaded) ≈ QuantitativeLib.scenario_return(sc_proj)
+
+    # Horizon before the valuation date is rejected
+    @test_throws AssertionError QuantitativeLib.PortfolioScenario(
+        "Bad", p, curve; horizon=Date(2025, 1, 1))
 end
