@@ -1,5 +1,9 @@
 module QuantitativeLib
 
+# Load stdlib modules used by submodules before `include`-ing them, so their
+# bindings are declared before submodule-level `using` statements run.
+using Serialization
+
 export QuantitativeCore, Pricers, Instruments
 
 include("./SystemConfig.jl")
