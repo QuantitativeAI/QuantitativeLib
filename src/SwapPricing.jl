@@ -2,6 +2,7 @@
 module SwapPricing
 
 using Dates
+using ..Instruments: Instrument
 using ..Pricers: Pricer
 using ..SystemConfig: day_count
 
@@ -89,7 +90,7 @@ struct SwapLeg
 end
 
 # Represents a complete swap.
-struct Swap
+struct Swap <: Instrument
     fixed_leg::SwapLeg
     floating_leg::SwapLeg
     start_date::Date

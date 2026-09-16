@@ -23,10 +23,14 @@ the directory that contains this module's source file.
 """
 function config_path()::String
     # `pathof(SystemConfig)` returns the parent module's file path when the
-    # module is included rather than loaded from a file.  The path points to
-    # `src/QuantitativeLib.jl`, so dirname gives `src/`.  We go up one level
-    # to the project root, then into `config/`.
-    base = dirname(pathof(SystemConfig))
+    # module is loaded as a package. When the module is included directly
+    # (e.g. during tests), `pathof` returns `nothing` — fall back to
+    # `@__DIR__` which is resolved at compile time from this source file.
+    p = pathof(SystemConfig)
+    if p === nothing
+        return joinpath(@__DIR__, "..", "config", "quantitative_lib.toml")
+    end
+    base = dirname(p)
     return abspath(joinpath(base, "..", "config", "quantitative_lib.toml"))
 end
 

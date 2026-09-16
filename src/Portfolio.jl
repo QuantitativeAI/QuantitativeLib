@@ -1,0 +1,374 @@
+# src/Portfolio.jl
+#
+# Portfolio management: a generic, nestable portfolio of financial instruments
+# valued against a zero-rate curve, with risk metrics (duration, convexity,
+# key-rate durations) and baseline-return analytics.
+#
+# Design:
+# - `AbstractPortfolio <: Instrument` so portfolios can hold portfolios.
+# - `market_value(inst, curve)` is the generic entry point; dispatch on the
+#   instrument type. Users extend it for new instruments (e.g. an FRA) by
+#   writing one method.
+# - Curve shift utilities (`parallel_shifted_curve`, `shifted_curve`) let us
+#   reprice under perturbations for numerical risk.
+# - Cash-flow aggregation is generic via `cash_flows`; it is used to compute
+#   analytical Macaulay duration for bond-like holdings and the portfolio's
+#   yield. Swap holdings are valued via the existing `StandardSwapPricer`.
+
+module PortfolioMgr
+
+using Dates: Date
+using ..QuantitativeCore: InstrumentCalendar, PeriodDays
+using ..Instruments: Instrument, Bond, ZeroCouponBond, CouponBond
+using ..SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer, present_value
+using ..Curves: ZeroCurve, discount_factor as curve_discount_factor, tenor
+import ..Curves: cash_flows  # extend the existing function with portfolio/swap methods
+using ..SystemConfig: day_count
+
+export AbstractPortfolio, Portfolio, Holding
+export add_instrument!, remove_instrument!, holdings
+export market_value
+export duration, convexity, key_rate_durations, macaulay_duration
+export shifted_curve, parallel_shifted_curve
+export portfolio_yield, expected_return
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+"""
+Abstract base type for portfolios: a generic holder of instruments.
+
+Subtypes of `Instrument` so portfolios can be nested inside other portfolios
+without any plumbing.
+"""
+abstract type AbstractPortfolio <: Instrument end
+
+"""
+A single line in a portfolio: an instrument and a quantity.
+
+`quantity` is a multiplier on the instrument's cash flows / valuation. Positive
+= long; negative = short.
+"""
+struct Holding
+    instrument::Instrument
+    quantity::Float64
+    name::String
+
+    function Holding(instrument::Instrument, quantity::Float64 = 1.0, name::String = "")
+        @assert quantity != 0.0 "Quantity must be non-zero"
+        return new(instrument, quantity, isempty(name) ? string(typeof(instrument)) : name)
+    end
+end
+
+"""
+A named, mutable portfolio of instrument holdings.
+"""
+mutable struct Portfolio <: AbstractPortfolio
+    name::String
+    holdings::Vector{Holding}
+    valuation_date::Date
+
+    function Portfolio(name::String = "Portfolio";
+                       holdings::Vector{Holding} = Holding[],
+                       valuation_date::Date = Date(today()))
+        return new(name, holdings, valuation_date)
+    end
+end
+
+"""
+Add an instrument to the portfolio.
+
+`quantity` defaults to 1.0. Pass a negative value for a short position.
+"""
+function add_instrument!(p::Portfolio, instrument::Instrument, quantity::Float64 = 1.0, name::String = "")::Nothing
+    push!(p.holdings, Holding(instrument, quantity, name))
+    return nothing
+end
+
+"""
+Remove all holdings matching the given instrument (by identity) or by `name`.
+
+If `name` is the empty string, instruments are matched by pointer. Otherwise
+holdings whose `name` equals `name` are removed.
+"""
+function remove_instrument!(p::Portfolio, instrument::Instrument; name::String = "")::Nothing
+    if name == ""
+        filter!(h -> h.instrument !== instrument, p.holdings)
+    else
+        filter!(h -> h.name != name, p.holdings)
+    end
+    return nothing
+end
+
+"""
+Return a vector of the portfolio's holdings.
+"""
+holdings(p::Portfolio)::Vector{Holding} = p.holdings
+
+# ---------------------------------------------------------------------------
+# Generic valuation
+# ---------------------------------------------------------------------------
+
+"""
+Generic valuation of an instrument against a zero-rate curve.
+
+Dispatch on the instrument type. Submodules can extend this for their own
+types by defining `market_value(my_type, curve::ZeroCurve; day_count)`.
+"""
+function market_value(inst::Instrument, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    error("market_value is not defined for instruments of type $(typeof(inst))")
+end
+
+"""
+Value a zero-coupon bond: face value discounted at the curve's rate to maturity.
+"""
+function market_value(z::ZeroCouponBond, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    return z.face_value * curve_discount_factor(curve, z.maturity; day_count=day_count)
+end
+
+"""
+Value a coupon bond: sum of each cash flow discounted on the curve.
+
+Uses `cash_flows` from `Curves` (which combines the final coupon and face
+value into a single terminal payment, matching `Pricers.price`).
+"""
+function market_value(b::CouponBond, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    pv = 0.0
+    for (date, amount) in cash_flows(b)
+        pv += amount * curve_discount_factor(curve, date; day_count=day_count)
+    end
+    return pv
+end
+
+"""
+Value a nested portfolio: sum of quantity-weighted sub-portfolio values.
+
+Because `AbstractPortfolio <: Instrument`, nested portfolios value
+recursively.
+"""
+function market_value(p::AbstractPortfolio, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    pv = 0.0
+    for h in p.holdings
+        pv += h.quantity * market_value(h.instrument, curve; day_count=day_count)
+    end
+    return pv
+end
+
+"""
+Value a legs-based swap (from `SwapPricing`) against a zero-rate curve.
+
+The convention is **long floating / short fixed**: `market_value = PV(floating)
+− PV(fixed)`. A par swap (floating rate = par rate) has value ≈ 0 at
+issuance. Users who are short floating / long fixed should negate the result.
+
+Builds a `StandardSwapPricer` from the curve's discount factors.
+"""
+function market_value(s::Swap, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    dfs = [(d, curve_discount_factor(curve, d; day_count=day_count))
+           for (d, _) in curve.nodes]
+    pricer = StandardSwapPricer(dfs)
+    return present_value(s.floating_leg.payments, pricer; day_count=day_count) -
+           present_value(s.fixed_leg.payments,  pricer; day_count=day_count)
+end
+
+# ---------------------------------------------------------------------------
+# Cash-flow aggregation
+# ---------------------------------------------------------------------------
+
+"""
+Cash flows of a swap as (date, amount) pairs, sorted by date.
+
+The convention matches `market_value(swap)`: positive for floating (long
+floating), negative for fixed (short fixed).
+"""
+function cash_flows(s::Swap)::Vector{Tuple{Date, Float64}}
+    flows = Tuple{Date, Float64}[]
+    for p in s.fixed_leg.payments
+        push!(flows, (p.date, -p.amount))
+    end
+    for p in s.floating_leg.payments
+        push!(flows, (p.date, p.amount))
+    end
+    return sort(flows, by = x -> x[1])
+end
+
+"""
+Cash flows of a portfolio: quantity-weighted aggregate of all sub-instrument
+cash flows, sorted by date.
+"""
+function cash_flows(p::AbstractPortfolio)::Vector{Tuple{Date, Float64}}
+    flows = Tuple{Date, Float64}[]
+    for h in p.holdings
+        for (date, amount) in cash_flows(h.instrument)
+            push!(flows, (date, amount * h.quantity))
+        end
+    end
+    return sort(flows, by = x -> x[1])
+end
+
+# ---------------------------------------------------------------------------
+# Curve shift utilities
+# ---------------------------------------------------------------------------
+
+"""
+Return a copy of `c` with the i-th node's zero rate shifted by `delta`.
+"""
+function shifted_curve(c::ZeroCurve, node_index::Int, delta::Float64)::ZeroCurve
+    nodes = copy(c.nodes)
+    nodes[node_index] = (nodes[node_index][1], nodes[node_index][2] + delta)
+    return ZeroCurve(c.issue_date, nodes)
+end
+
+"""
+Return a copy of `c` with every node's zero rate shifted by `delta`.
+"""
+function parallel_shifted_curve(c::ZeroCurve, delta::Float64)::ZeroCurve
+    return ZeroCurve(c.issue_date, [(d, z + delta) for (d, z) in c.nodes])
+end
+
+"""
+Return a copy of `c` with each node's zero rate shifted by the corresponding
+entry in `deltas`.
+"""
+function shifted_curve(c::ZeroCurve, deltas::AbstractVector{<:Real})::ZeroCurve
+    @assert length(deltas) == length(c.nodes) "deltas must have the same length as the curve's nodes"
+    return ZeroCurve(c.issue_date, [(d, z + Δ) for ((d, z), Δ) in zip(c.nodes, deltas)])
+end
+
+# ---------------------------------------------------------------------------
+# Risk metrics
+# ---------------------------------------------------------------------------
+
+"""
+Macaulay duration (in years) of an instrument, computed from its cash flows.
+
+On a continuously-compounded curve, Macaulay duration equals the sensitivity
+of the log-price to the rate (i.e. modified duration). For a portfolio, the
+cash flows are aggregated and the duration is the value-weighted average.
+"""
+function macaulay_duration(inst::Instrument, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    v0 = market_value(inst, curve; day_count=day_count)
+    pv_t = 0.0
+    for (date, amount) in cash_flows(inst)
+        t = tenor(curve, date; day_count=day_count)
+        pv_t += t * amount * curve_discount_factor(curve, date; day_count=day_count)
+    end
+    return pv_t / v0
+end
+
+"""
+Portfolio duration via symmetric parallel-shift finite differences (in years).
+
+On a cc curve this equals the aggregate Macaulay duration. Uses a central
+difference with step `shift` (default 1bp = 1e-4 in rate units).
+"""
+function duration(p::AbstractPortfolio, curve::ZeroCurve;
+                  shift::Float64 = 1e-4, day_count::Float64 = day_count("ACT_365"))::Float64
+    v0 = market_value(p, curve; day_count=day_count)
+    v_up = market_value(p, parallel_shifted_curve(curve, shift); day_count=day_count)
+    v_dn = market_value(p, parallel_shifted_curve(curve, -shift); day_count=day_count)
+    return (v_dn - v_up) / (2.0 * shift * v0)
+end
+
+"""
+Portfolio convexity (dimensionless) via symmetric finite differences.
+
+`convexity = (V_up + V_dn − 2 V0) / (shift² V0)`. On a cc curve this is
+the second derivative of log(V) w.r.t. the rate.
+"""
+function convexity(p::AbstractPortfolio, curve::ZeroCurve;
+                   shift::Float64 = 1e-4, day_count::Float64 = day_count("ACT_365"))::Float64
+    v0 = market_value(p, curve; day_count=day_count)
+    v_up = market_value(p, parallel_shifted_curve(curve, shift); day_count=day_count)
+    v_dn = market_value(p, parallel_shifted_curve(curve, -shift); day_count=day_count)
+    return (v_up + v_dn - 2.0 * v0) / (shift^2 * v0)
+end
+
+"""
+Key-rate durations: sensitivity of the portfolio value to a 1bp parallel
+shift in each node of the curve, measured in currency per bp.
+
+`krd[i] = (V(curve with node i shifted +1bp) − V0) / 1.0`, so the returned
+numbers are already in dollars per bp of the shifted node. Positive KRD
+means value rises when that node's zero rate rises (e.g. a long position at
+longer tenors on a steep curve).
+"""
+function key_rate_durations(p::AbstractPortfolio, curve::ZeroCurve;
+                            day_count::Float64 = day_count("ACT_365"))::Vector{Float64}
+    v0 = market_value(p, curve; day_count=day_count)
+    krd = Float64[]
+    for i in 1:length(curve.nodes)
+        vp = market_value(p, shifted_curve(curve, i, 1e-4); day_count=day_count)
+        push!(krd, (vp - v0) / 1e-4)
+    end
+    return krd
+end
+
+# ---------------------------------------------------------------------------
+# Yield and baseline return
+# ---------------------------------------------------------------------------
+
+"""
+The (continuously compounded) yield of the portfolio: the rate `y` that
+discounts the portfolio's cash flows to its market value.
+
+Solved via bisection on `y ∈ [−0.5, 5.0]`. Only well-defined for portfolios
+with a unique, economically meaningful yield (e.g. bond-like cash flows);
+for generic instruments with signed cash flows the function may throw or
+return an uninterpretable value.
+"""
+function portfolio_yield(p::AbstractPortfolio, curve::ZeroCurve;
+               day_count::Float64 = day_count("ACT_365"))::Float64
+    v0 = market_value(p, curve; day_count=day_count)
+    flows = cash_flows(p)
+
+    function pv(y)
+        s = 0.0
+        for (date, amount) in flows
+            t = tenor(curve, date; day_count=day_count)
+            s += amount * exp(-y * t)
+        end
+        return s
+    end
+
+    lo, hi = -0.5, 5.0
+    f_lo, f_hi = pv(lo) - v0, pv(hi) - v0
+    @assert f_lo > 0.0 && f_hi < 0.0 "No unique yield found on [-0.5, 5.0] (f_lo=$(f_lo), f_hi=$(f_hi), v0=$(v0))"
+
+    for _ in 1:100
+        mid = (lo + hi) / 2.0
+        f = pv(mid) - v0
+        if f > 0.0
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    return (lo + hi) / 2.0
+end
+
+"""
+The baseline (curve-consistent) return over the horizon `[valuation_date,
+horizon]`, assuming the curve stays fixed and all cash flows received before
+the horizon are reinvested at the curve's implied forward rates.
+
+For a portfolio whose cash flows are deterministic and valued on a single
+curve, this reduces to `1 / DF(horizon) − 1` (the risk-free return over the
+horizon). The explicit cash-flow summation is kept so the function remains
+valid for instruments whose cash flows are stochastic or curve-dependent at
+a future date.
+"""
+function expected_return(p::AbstractPortfolio, curve::ZeroCurve, horizon::Date;
+                         day_count::Float64 = day_count("ACT_365"))::Float64
+    v0 = market_value(p, curve; day_count=day_count)
+    df_h = curve_discount_factor(curve, horizon; day_count=day_count)
+    v_h = 0.0
+    for (date, amount) in cash_flows(p)
+        df_d = curve_discount_factor(curve, date; day_count=day_count)
+        v_h += amount * df_d / df_h
+    end
+    return v_h / v0 - 1.0
+end
+
+end # module PortfolioMgr

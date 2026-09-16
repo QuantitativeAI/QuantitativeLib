@@ -285,4 +285,5 @@ end
         [q1, QuantitativeLib.BondQuote(short, 1.0)])
 end
 
+include("portfolio_test.jl")
 include("montecarlo_test.jl")

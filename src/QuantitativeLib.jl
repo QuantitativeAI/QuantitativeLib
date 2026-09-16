@@ -20,7 +20,8 @@ export Bond, ZeroCouponBond, CouponBond, Coupon, Option, generate_coupons!
 using .Instruments: Option  # Ensure Option is available in main scope
 
 using .Pricers
-export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer, price
+export Pricer, BlackScholesPricer, HullWhitePricer, BondPricer
+export price
 export InterestMode, ContinuousInterest, SimpleInterest
 
 include("./Curves.jl")
@@ -36,6 +37,14 @@ export YieldCurve, ForwardCurve, DiscountCurve, BasisCurve, CreditCurve
 export interpolate_vol, bootstrap_yield_curve
 
 include("./SwapPricing.jl")
+
+include("./Portfolio.jl")
+using .PortfolioMgr
+export AbstractPortfolio, Portfolio, Holding, add_instrument!, remove_instrument!
+export holdings
+export market_value, duration, convexity, key_rate_durations, macaulay_duration
+export shifted_curve, parallel_shifted_curve
+export portfolio_yield, expected_return
 
 include("./MonteCarloPricing.jl")
 using .MonteCarloPricing
