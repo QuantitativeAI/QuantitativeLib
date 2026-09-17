@@ -24,7 +24,10 @@ using ..SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer, present_value
 using ..Curves: ZeroCurve, discount_factor as curve_discount_factor, tenor
 import ..Curves: cash_flows  # extend the existing function with portfolio/swap methods
 using ..SystemConfig: day_count
-using Serialization: jldump, load
+using Serialization  # `Serialization.serialize` / `Serialization.deserialize` are called
+                     # qualified below; a plain `using Serialization: ...` can leave the
+                     # binding unassigned when this file is `include`d in a context where
+                     # `Serialization` is loaded for the first time.
 
 export AbstractPortfolio, Portfolio, Holding
 export add_instrument!, remove_instrument!, holdings
@@ -506,10 +509,12 @@ end
 Save a scenario to `path` using Julia's stdlib `Serialization` format.
 
 The file is a binary Julia image; load it back with `load_scenario`.
-Only load files you trust, as `Serialization.load` evaluates the image.
+Only load files you trust, as deserializing evaluates the stored module
+references. Note `Serialization.serialize`/`deserialize` (used here) write a
+format that is not guaranteed to be readable by future major Julia versions.
 """
 function save_scenario(path::AbstractString, s::PortfolioScenario)::Nothing
-    jldump(path, s)
+    Serialization.serialize(path, s)
     return nothing
 end
 
@@ -517,7 +522,7 @@ end
 Load a scenario previously saved with `save_scenario`.
 """
 function load_scenario(path::AbstractString)::PortfolioScenario
-    s = load(path)
+    s = Serialization.deserialize(path)
     @assert s isa PortfolioScenario "$path does not contain a PortfolioScenario (got $(typeof(s)))"
     return s
 end
@@ -566,7 +571,7 @@ function scenario_table(ss::AbstractVector{PortfolioScenario};
 
     # Align KRD rows only when every scenario's valuation curve has the
     # same node dates.
-    same_nodes = all(j -> ss[j].valuation_curve.nodes .== ss[1].valuation_curve.nodes, 2:length(ss))
+    same_nodes = all(j -> ss[j].valuation_curve.nodes == ss[1].valuation_curve.nodes, 2:length(ss))
 
     header = lpad("Metric", 18)
     for n in names
