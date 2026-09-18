@@ -150,6 +150,32 @@ using QuantitativeLib.Curves: bootstrap_zero_curve, BondQuote
     swap_pv = QuantitativeLib.market_value(swap, curve)
     @test swap_pv ≈ 0.0 atol=1e-6
 
+    # Par rate: for a par swap (fixed = floating) the par rate equals the
+    # fixed rate. The annual case was always correct; the semi-annual case
+    # regression-tests the day-count-weighted annuity fix (the old code
+    # divided by Σ DF and returned ≈ half the true par rate).
+    prs_nodes = [(issue, 1.0)]
+    for (d, _) in curve.nodes
+        push!(prs_nodes, (d, QuantitativeLib.discount_factor(curve, d)))
+    end
+    prs_pricer = DiscountCurveSwapPricer(prs_nodes)
+
+    @test par_rate(swap, prs_pricer) ≈ fixed_rate atol=1e-12
+
+    # Semi-annual par swap: par rate must equal the (uniform) leg rate.
+    semi_rate = 0.03
+    semi_dates = [Date(2026, 7, 1), Date(2027, 1, 1), Date(2027, 7, 1)]
+    semi_fixed = Payment[]
+    semi_float = Payment[]
+    prev = swap_start
+    for d in semi_dates
+        push!(semi_fixed, Payment(d, notional, semi_rate, prev, d, "ACTUAL_ACTUAL"))
+        push!(semi_float, Payment(d, notional, semi_rate, prev, d, "ACTUAL_ACTUAL"))
+        prev = d
+    end
+    semi_swap = Swap(SwapLeg(semi_fixed), SwapLeg(semi_float), swap_start, semi_dates[end], notional, 0.0)
+    @test par_rate(semi_swap, prs_pricer) ≈ semi_rate atol=1e-12
+
     # Swap inside a portfolio
     p_swap = QuantitativeLib.Portfolio("WithSwap"; valuation_date=issue)
     QuantitativeLib.add_instrument!(p_swap, zcb, 10.0)

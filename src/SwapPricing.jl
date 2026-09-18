@@ -279,23 +279,38 @@ function present_value(payments::AbstractVector{T}, pricer::Pricer; day_count::F
 end
 
 """
-Calculates the par fixed rate for a swap (per unit of notional).
+Recovers the fixed rate embedded in a swap's fixed leg (per unit of
+notional): the uniform rate `K` such that the fixed leg's payments equal
+`notional * K * (daysᵢ / day_count)`.
 
-The fixed leg's `payment.amount` already embeds the notional
-(`notional * rate * days / 365`), so we divide by notional to obtain
-the rate itself.
+Each `payment.amount` already embeds the notional
+(`notional * rate * days / day_count`), so we divide by notional to obtain
+the rate itself, then weight by the annuity factor `Σ (daysᵢ / day_count) ·
+DFᵢ`. Each period's day count is inferred from consecutive payment dates,
+with the first period accruing from `swap.start_date`.
+
+For a swap whose fixed leg was built at a single rate this returns that
+rate exactly; for a par swap (fixed rate = floating rate) it is also the
+NPV-zero par rate.
+
+# Throws
+- `ErrorException` if the annuity factor is zero (e.g. an empty fixed leg),
+  in which case no par rate exists.
 """
 function par_rate(swap::Swap, pricer::Pricer; day_count::Float64 = day_count("ACT_365"))::Float64
-    sum_df = 0.0
+    annuity = 0.0
     sum_amount_df = 0.0
 
+    prev_date = swap.start_date
     for payment in swap.fixed_leg.payments
         df = discount_factor(pricer, payment.date; day_count=day_count)
-        sum_df += df
+        annuity += (payment.date - prev_date).value / day_count * df
         sum_amount_df += (payment.amount / swap.notional) * df
+        prev_date = payment.date
     end
+    @assert annuity > 0 "Annuity factor must be positive to compute a par rate"
 
-    return sum_amount_df / sum_df
+    return sum_amount_df / annuity
 end
 
 """
