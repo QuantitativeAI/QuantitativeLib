@@ -13,14 +13,15 @@
 #   reprice under perturbations for numerical risk.
 # - Cash-flow aggregation is generic via `cash_flows`; it is used to compute
 #   analytical Macaulay duration for bond-like holdings and the portfolio's
-#   yield. Swap holdings are valued via the existing `StandardSwapPricer`.
+#   yield. Swap holdings are valued via the existing `DiscountCurveSwapPricer`.
 
 module PortfolioMgr
 
 using Dates: Date, today
 using ..QuantitativeCore: InstrumentCalendar, PeriodDays
 using ..Instruments: Instrument, Bond, ZeroCouponBond, CouponBond
-using ..SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer, present_value
+using ..SwapPricing: Swap, SwapLeg, Payment, DiscountCurveSwapPricer, present_value
+using ..SwapPricing: TotalReturnSwap, TotalReturnSwapPricer, financing_payments, npv
 using ..Curves: ZeroCurve, discount_factor as curve_discount_factor, tenor
 import ..Curves: cash_flows  # extend the existing function with portfolio/swap methods
 using ..SystemConfig: day_count
@@ -170,14 +171,29 @@ The convention is **long floating / short fixed**: `market_value = PV(floating)
 − PV(fixed)`. A par swap (floating rate = par rate) has value ≈ 0 at
 issuance. Users who are short floating / long fixed should negate the result.
 
-Builds a `StandardSwapPricer` from the curve's discount factors.
+Builds a `DiscountCurveSwapPricer` from the curve's discount factors.
 """
 function market_value(s::Swap, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
     dfs = [(d, curve_discount_factor(curve, d; day_count=day_count))
            for (d, _) in curve.nodes]
-    pricer = StandardSwapPricer(dfs)
+    pricer = DiscountCurveSwapPricer(dfs)
     return present_value(s.floating_leg.payments, pricer; day_count=day_count) -
            present_value(s.fixed_leg.payments,  pricer; day_count=day_count)
+end
+
+"""
+Value a total return swap (from `SwapPricing`) against a zero-rate curve.
+
+The convention is **long total return / short financing**:
+`market_value = PV(total return leg) − PV(financing leg)`. A swap with the
+financing rate set to its par rate has value ≈ 0 at issuance. Users who are
+short total return / long financing should negate the result.
+"""
+function market_value(trs::TotalReturnSwap, curve::ZeroCurve; day_count::Float64 = day_count("ACT_365"))::Float64
+    dfs = [(d, curve_discount_factor(curve, d; day_count=day_count))
+           for (d, _) in curve.nodes]
+    pricer = TotalReturnSwapPricer(dfs)
+    return npv(trs, pricer; day_count=day_count)
 end
 
 # ---------------------------------------------------------------------------
@@ -197,6 +213,28 @@ function cash_flows(s::Swap)::Vector{Tuple{Date, Float64}}
     end
     for p in s.floating_leg.payments
         push!(flows, (p.date, p.amount))
+    end
+    return sort(flows, by = x -> x[1])
+end
+
+"""
+Cash flows of a total return swap as (date, amount) pairs, sorted by date.
+
+The convention matches `market_value(trs)`: positive for the total return
+leg (income plus the terminal capital gain/loss), negative for the financing
+leg.
+"""
+function cash_flows(trs::TotalReturnSwap)::Vector{Tuple{Date, Float64}}
+    flows = Tuple{Date, Float64}[]
+    for p in trs.income_payments
+        push!(flows, (p.date, p.amount))
+    end
+    capital_change = trs.end_value - trs.notional
+    if capital_change != 0.0
+        push!(flows, (trs.end_date, capital_change))
+    end
+    for p in financing_payments(trs)
+        push!(flows, (p.date, -p.amount))
     end
     return sort(flows, by = x -> x[1])
 end

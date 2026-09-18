@@ -100,7 +100,7 @@ maturity   = Date(2022, 1, 1)
 
 # Build a discount curve (continuously-compounded zero rates → DFs)
 curve_nodes = [(start + Year(y), exp(-r * y)) for (y, r) in [(0.0, 0.02), (1.0, 0.025), (2.0, 0.03)]]
-pricer = StandardSwapPricer(curve_nodes)
+pricer = DiscountCurveSwapPricer(curve_nodes)
 
 # Build the swap legs
 fixed_payments = Payment[
@@ -117,6 +117,37 @@ println("Swap NPV:   $(round(present_value(fixed_payments, pricer) - present_val
 println("Par rate:   $(round(par_rate(swap, pricer) * 100, digits=4))%")
 println("Duration:   $(round(modified_duration(swap, pricer), digits=4)) years")
 ```
+
+#### Total Return Swap (equity swap)
+
+```julia
+using QuantitativeLib
+using QuantitativeLib.SwapPricing
+using Dates
+
+start     = Date(2020, 1, 1)
+end_date  = Date(2022, 1, 1)
+notional  = 1_000_000.0
+end_value = 1_050_000.0   # underlying value at the end date (+5%)
+
+# Discount curve (continuously-compounded zero rates → DFs)
+curve_nodes = [(start + Year(y), exp(-r * y)) for (y, r) in [(0.0, 0.02), (1.0, 0.025), (2.0, 0.03)]]
+
+income_payments = Payment[
+    Payment(Date(2020, 7, 1), notional, 0.01, start, Date(2020, 7, 1), "ACTUAL_ACTUAL"),
+    Payment(Date(2021, 1, 1), notional, 0.01, Date(2020, 7, 1), Date(2021, 1, 1), "ACTUAL_ACTUAL"),
+    Payment(Date(2021, 7, 1), notional, 0.01, Date(2021, 1, 1), Date(2021, 7, 1), "ACTUAL_ACTUAL"),
+    Payment(end_date,         notional, 0.01, Date(2021, 7, 1), end_date, "ACTUAL_ACTUAL"),
+]
+
+trs = TotalReturnSwap(start, end_date, notional, income_payments, 0.03, end_value; spread = 0.0025)
+trs_pricer = TotalReturnSwapPricer(curve_nodes)
+
+println("TRS NPV:          $(round(npv(trs, trs_pricer), digits=2))  (long total return)")
+println("Par financing:    $(round(par_rate(trs, trs_pricer) * 100, digits=4))%  (ex-spread)")
+```
+
+The total return leg pays the asset's income plus the terminal capital gain/loss (`end_value - notional`); the financing leg pays `(financing_rate + spread) × notional` over each period of the income schedule. NPV is from the perspective of the party receiving the total return.
 
 ### 4. Monte Carlo Option Pricing
 

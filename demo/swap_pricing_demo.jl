@@ -1,8 +1,8 @@
 # demo/swap_pricing_demo.jl
 #
 # Demonstrates the SwapPricing module: building a swap, pricing it with a
-# StandardSwapPricer, computing the par rate and Macaulay duration, and
-# settling the swap early.
+# DiscountCurveSwapPricer, computing the par rate and Macaulay duration,
+# settling the swap early, and pricing a total return swap (equity swap).
 
 using QuantitativeLib
 using QuantitativeLib.SwapPricing
@@ -17,7 +17,7 @@ const _issue_date = Date(2020, 1, 1)
 _zero_rates = [(0.0,  0.02), (1.0,  0.025), (2.0,  0.03)]  # (tenor, zero rate)
 _curve_nodes = [(Date(2020, 1, 1) + Dates.Year(Int(round(y))), exp(-r * y)) for (y, r) in _zero_rates]
 
-pricer = StandardSwapPricer(_curve_nodes)
+pricer = DiscountCurveSwapPricer(_curve_nodes)
 
 println("=" ^ 60)
 println("  Swap Pricing Demo")
@@ -117,7 +117,41 @@ else
 end
 
 # --------------------------------------------------------------------------
-# 7. Discount-factor lookup (demonstrates the new error behaviour)
+# 7. Total return swap (equity swap)
+# --------------------------------------------------------------------------
+# One leg pays the total return on the underlying asset (income + capital
+# gain/loss), the other pays a financing rate (reference + spread) on the
+# notional. Here: an index at 1,000,000 paying 2% income p.a. and worth
+# 1,050,000 at the end date; financing at 3.00% + 25 bp.
+trs_notional   = 1_000_000.0
+financing_rate = 0.03
+trs_spread     = 0.0025
+end_value      = 1_050_000.0
+
+income_payments = Payment[
+    Payment(Date(2020, 7, 1), trs_notional, 0.01, start_date, Date(2020, 7, 1), "ACTUAL_ACTUAL"),
+    Payment(Date(2021, 1, 1), trs_notional, 0.01, Date(2020, 7, 1), Date(2021, 1, 1), "ACTUAL_ACTUAL"),
+    Payment(Date(2021, 7, 1), trs_notional, 0.01, Date(2021, 1, 1), Date(2021, 7, 1), "ACTUAL_ACTUAL"),
+    Payment(Date(2022, 1, 1), trs_notional, 0.01, Date(2021, 7, 1), end_date,   "ACTUAL_ACTUAL"),
+]
+
+trs = TotalReturnSwap(start_date, end_date, trs_notional, income_payments,
+                      financing_rate, end_value; spread=trs_spread)
+trs_pricer = TotalReturnSwapPricer(_curve_nodes)
+
+trs_npv = npv(trs, trs_pricer)
+trs_par = par_rate(trs, trs_pricer)
+
+println("\n[Total return swap]")
+println("  Notional (asset value): $(round(trs_notional, digits=2))")
+println("  End value:              $(round(end_value, digits=2))  (+5%)")
+println("  Financing rate:         $(round((financing_rate + trs_spread) * 100, digits=2))%  (3.00% + 25 bp)")
+println("  NPV (long total return): $(round(trs_npv, digits=2))")
+println("  Par financing rate:     $(round(trs_par * 100, digits=4))%  (ex-spread)")
+println("  (The rate that makes the TRS NPV = 0 at valuation)")
+
+# --------------------------------------------------------------------------
+# 8. Discount-factor lookup (demonstrates the new error behaviour)
 # --------------------------------------------------------------------------
 println("\n[Discount-factor lookup]")
 df_1y = SwapPricing.discount_factor(pricer, Date(2021, 1, 1))

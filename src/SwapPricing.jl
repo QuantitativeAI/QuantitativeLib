@@ -6,9 +6,10 @@ using ..Instruments: Instrument
 using ..Pricers: Pricer
 using ..SystemConfig: day_count
 
-export Payment, SwapLeg, Swap, SettledPayment
-export StandardSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer
-export discount_factor, present_value, par_rate, modified_duration, time_to_maturity, settle_swap
+export Payment, SwapLeg, Swap, SettledPayment, TotalReturnSwap
+export DiscountCurveSwapPricer, TotalReturnSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer
+export discount_factor, present_value, par_rate, npv, financing_payments
+export modified_duration, time_to_maturity, settle_swap
 
 # Represents a single payment in a swap leg.
 struct Payment
@@ -136,11 +137,90 @@ struct BlackDesclozelPricer <: Pricer
     end
 end
 
-# Standard swap pricer using discount curve.
-struct StandardSwapPricer <: Pricer
+"""
+Pricer for interest rate swaps that discounts the legs' cash flows along a
+discount curve (log-linear interpolation between nodes, flat forward
+extrapolation beyond the last node).
+
+# Fields
+- `discount_curve::Vector{Tuple{Date, Float64}}`: (date, discount factor) nodes,
+  with the first node being the valuation date.
+
+# Constructor
+- `DiscountCurveSwapPricer(discount_curve)`
+"""
+struct DiscountCurveSwapPricer <: Pricer
     discount_curve::Vector{Tuple{Date, Float64}}
 
-    function StandardSwapPricer(discount_curve::Vector{Tuple{Date, Float64}})
+    function DiscountCurveSwapPricer(discount_curve::Vector{Tuple{Date, Float64}})
+        @assert all(d -> d[2] > 0, discount_curve) "Discount factors must be positive"
+        return new(discount_curve)
+    end
+end
+
+"""
+Represents a total return swap (TRS) on an underlying asset (an equity,
+index, bond or basket). One leg (the total return leg) pays the total return
+on the underlying: the income (dividends/coupons) received over the life of
+the swap plus the capital gain/loss between the start and end dates. The
+other leg (the financing leg) pays a financing rate (e.g., SOFR + spread) on
+the notional.
+
+# Fields
+- `start_date::Date`: The start (valuation) date of the swap.
+- `end_date::Date`: The end date of the swap.
+- `notional::Float64`: The initial value of the underlying asset.
+- `income_payments::Vector{Payment}`: The income (dividends/coupons) received
+  from the underlying over the life of the swap, paid on the total return leg.
+- `financing_rate::Float64`: The annual financing rate applied to the notional
+  on the financing leg.
+- `spread::Float64`: The additional spread added to the financing rate.
+- `end_value::Float64`: The expected (or observed) value of the underlying
+  asset at the end date; the capital gain/loss is `end_value - notional`.
+
+# Constructor
+- `TotalReturnSwap(start_date, end_date, notional, income_payments,
+                   financing_rate, end_value; spread = 0.0)`
+"""
+struct TotalReturnSwap <: Instrument
+    start_date::Date
+    end_date::Date
+    notional::Float64
+    income_payments::Vector{Payment}
+    financing_rate::Float64
+    spread::Float64
+    end_value::Float64
+
+    function TotalReturnSwap(start_date::Date, end_date::Date,
+                             notional::Float64,
+                             income_payments::Vector{Payment},
+                             financing_rate::Float64,
+                             end_value::Float64;
+                             spread::Float64 = 0.0)
+        @assert end_date >= start_date "End date must be on or after the start date"
+        @assert notional > 0.0 "Notional must be positive"
+        @assert end_value > 0.0 "End value must be positive"
+        @assert financing_rate >= 0.0 "Financing rate must be non-negative"
+        return new(start_date, end_date, notional, income_payments,
+                   financing_rate, spread, end_value)
+    end
+end
+
+"""
+Pricer for total return swaps: discounts the total return leg (income plus
+terminal capital gain/loss) and the financing leg along the discount curve.
+
+# Fields
+- `discount_curve::Vector{Tuple{Date, Float64}}`: (date, discount factor) nodes,
+  with the first node being the valuation date.
+
+# Constructor
+- `TotalReturnSwapPricer(discount_curve)`
+"""
+struct TotalReturnSwapPricer <: Pricer
+    discount_curve::Vector{Tuple{Date, Float64}}
+
+    function TotalReturnSwapPricer(discount_curve::Vector{Tuple{Date, Float64}})
         @assert all(d -> d[2] > 0, discount_curve) "Discount factors must be positive"
         return new(discount_curve)
     end
@@ -176,7 +256,7 @@ function _lookup_discount_factor(discount_curve::Vector{Tuple{Date, Float64}},
     error("unreachable: interpolation failed for tenor $t")
 end
 
-for PricerType in (StandardSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer)
+for PricerType in (DiscountCurveSwapPricer, TotalReturnSwapPricer, HullWhiteSwapPricer, BlackDesclozelPricer)
     @eval function discount_factor(pricer::$PricerType, date::Date; day_count::Float64 = day_count("ACT_365"))::Float64
         return _lookup_discount_factor(pricer.discount_curve, date, pricer.discount_curve[1][1]; day_count=day_count)
     end
@@ -237,6 +317,70 @@ function modified_duration(swap::Swap, pricer::Pricer; day_count::Float64 = day_
     end
 
     return sum_tdf / sum_df
+end
+
+"""
+Net present value of a total return swap from the perspective of the party
+**receiving the total return** (paying the financing leg):
+`NPV = PV(income) + PV(capital gain/loss) - PV(financing leg)`.
+
+The capital gain/loss is `end_value - notional`, received at the end date.
+"""
+function npv(trs::TotalReturnSwap, pricer::TotalReturnSwapPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    return present_value(trs.income_payments, pricer; day_count=day_count) +
+           (trs.end_value - trs.notional) * discount_factor(pricer, trs.end_date; day_count=day_count) -
+           present_value(financing_payments(trs), pricer; day_count=day_count)
+end
+
+"""
+The financing leg's payments: `(financing_rate + spread) x notional` accrued
+over each period of the income schedule (the first accrues from the start
+date), using the convention of the first income payment (ACTUAL_ACTUAL if
+there is none).
+"""
+function financing_payments(trs::TotalReturnSwap)::Vector{Payment}
+    convention = isempty(trs.income_payments) ? "ACTUAL_ACTUAL" : trs.income_payments[1].convention
+    rate = trs.financing_rate + trs.spread
+
+    payments = Payment[]
+    prev_date = trs.start_date
+    for pmt in trs.income_payments
+        push!(payments, Payment(pmt.date, trs.notional, rate, prev_date, pmt.date, convention))
+        prev_date = pmt.date
+    end
+    # Accrue the final stub from the last income payment date to the end date.
+    if prev_date < trs.end_date
+        push!(payments, Payment(trs.end_date, trs.notional, rate, prev_date, trs.end_date, convention))
+    end
+    return payments
+end
+
+"""
+The par financing rate of a total return swap (excluding the spread): the
+base financing rate such that a swap with that rate **and the same spread**
+has NPV zero at valuation.
+
+# Throws
+- `ErrorException` if the annuity factor is zero (e.g. no income payments and
+  a zero-length swap), in which case no par rate exists.
+"""
+function par_rate(trs::TotalReturnSwap, pricer::TotalReturnSwapPricer; day_count::Float64 = day_count("ACT_365"))::Float64
+    annuity = 0.0
+    prev_date = trs.start_date
+    for pmt in trs.income_payments
+        df = discount_factor(pricer, pmt.date; day_count=day_count)
+        annuity += (pmt.date - prev_date).value / day_count * df
+        prev_date = pmt.date
+    end
+    if prev_date < trs.end_date
+        df = discount_factor(pricer, trs.end_date; day_count=day_count)
+        annuity += (trs.end_date - prev_date).value / day_count * df
+    end
+    @assert annuity > 0 "Annuity factor must be positive to compute a par rate"
+
+    pv_tr_leg = present_value(trs.income_payments, pricer; day_count=day_count) +
+                (trs.end_value - trs.notional) * discount_factor(pricer, trs.end_date; day_count=day_count)
+    return pv_tr_leg / (trs.notional * annuity) - trs.spread
 end
 
 """

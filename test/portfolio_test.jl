@@ -1,7 +1,8 @@
 using Dates
 using Test
 using QuantitativeLib
-using QuantitativeLib.SwapPricing: Swap, SwapLeg, Payment, StandardSwapPricer
+using QuantitativeLib.SwapPricing: Swap, SwapLeg, Payment, DiscountCurveSwapPricer
+using QuantitativeLib.SwapPricing: TotalReturnSwap, TotalReturnSwapPricer, npv, par_rate, financing_payments
 using QuantitativeLib.Curves: bootstrap_zero_curve, BondQuote
 
 @testset "Portfolio module" begin
@@ -154,6 +155,58 @@ using QuantitativeLib.Curves: bootstrap_zero_curve, BondQuote
     QuantitativeLib.add_instrument!(p_swap, zcb, 10.0)
     QuantitativeLib.add_instrument!(p_swap, swap, 1.0)
     @test QuantitativeLib.market_value(p_swap, curve) ≈ 10.0 * v_zcb
+
+    # -----------------------------------------------------------------------
+    # Total return swap valuation
+    # -----------------------------------------------------------------------
+    trs_notional = 1_000_000.0
+    trs_end = Date(2028, 1, 1)
+    end_value = 1_050_000.0   # +5% capital gain
+
+    trs_income = Payment[
+        Payment(Date(2027, 1, 1), trs_notional, 0.01, issue, Date(2027, 1, 1), "ACTUAL_ACTUAL"),
+        Payment(trs_end,          trs_notional, 0.01, Date(2027, 1, 1), trs_end, "ACTUAL_ACTUAL"),
+    ]
+    trs = TotalReturnSwap(issue, trs_end, trs_notional, trs_income, 0.03, end_value; spread = 0.0025)
+    # The pricer's first node is the valuation date (DF = 1.0); the curve here
+    # has no node at the issue date, so prepend it explicitly.
+    trs_nodes = [(issue, 1.0)]
+    for (d, _) in curve.nodes
+        push!(trs_nodes, (d, QuantitativeLib.discount_factor(curve, d)))
+    end
+    trs_pricer = TotalReturnSwapPricer(trs_nodes)
+
+    # NPV: PV(income) + PV(capital gain) − PV(financing leg)
+    pv_income = sum(p.amount * QuantitativeLib.discount_factor(curve, p.date) for p in trs_income)
+    pv_capital = (end_value - trs_notional) * QuantitativeLib.discount_factor(curve, trs_end)
+    pv_fin = sum(p.amount * QuantitativeLib.discount_factor(curve, p.date) for p in financing_payments(trs))
+    @test npv(trs, trs_pricer) ≈ pv_income + pv_capital - pv_fin
+
+    # Portfolio valuation matches the standalone NPV (long total return convention).
+    @test QuantitativeLib.market_value(trs, curve) ≈ npv(trs, trs_pricer)
+
+    # A par swap (financing rate = par rate, same spread) has value ≈ 0.
+    par_fin = par_rate(trs, trs_pricer)
+    trs_par_swap = TotalReturnSwap(issue, trs_end, trs_notional, trs_income, par_fin, end_value;
+                                   spread = 0.0025)
+    @test npv(trs_par_swap, trs_pricer) ≈ 0.0 atol=1e-6
+
+    # Higher capital gain → higher NPV.
+    trs_up = TotalReturnSwap(issue, trs_end, trs_notional, trs_income, 0.03, 1_100_000.0; spread = 0.0025)
+    @test npv(trs_up, trs_pricer) > npv(trs, trs_pricer)
+
+    # TRS inside a portfolio.
+    p_trs = QuantitativeLib.Portfolio("WithTRS"; valuation_date=issue)
+    QuantitativeLib.add_instrument!(p_trs, trs, 2.0)
+    @test QuantitativeLib.market_value(p_trs, curve) ≈ 2.0 * npv(trs, trs_pricer)
+
+    # Cash-flow aggregation: positive TR leg (income + capital), negative
+    # financing; net undiscounted flow matches the NPV formula undiscounted.
+    flows = QuantitativeLib.cash_flows(trs)
+    undiscounted_net = sum(p.amount for p in trs_income) + (end_value - trs_notional) -
+                       sum(p.amount for p in financing_payments(trs))
+    @test sum(a for (_, a) in flows) ≈ undiscounted_net
+    @test issorted([d for (d, _) in flows])
 
     # -----------------------------------------------------------------------
     # Curve shift helpers

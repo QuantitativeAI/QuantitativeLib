@@ -50,7 +50,7 @@ graph TD
 | **Instruments** | Financial instrument types | `ZeroCouponBond`, `CouponBond`, `Option`, `Swap` |
 | **Pricers** | Closed-form & model pricers | `BondPricer` (continuous & simple), `BlackScholesPricer`, `HullWhitePricer` |
 | **Curves** | Term-structure modelling | `ZeroCurve` (log-linear), `YieldCurve`, `ForwardCurve`, …, `bootstrap_zero_curve` |
-| **SwapPricing** | IRS valuation & analytics | `StandardSwapPricer`, `par_rate`, `modified_duration`, `settle_swap` |
+| **SwapPricing** | IRS & total return swap valuation & analytics | `DiscountCurveSwapPricer`, `TotalReturnSwapPricer`, `TotalReturnSwap`, `par_rate`, `npv`, `modified_duration`, `settle_swap` |
 | **PortfolioMgr** | Nestable portfolios, risk, scenarios | `Portfolio`, `market_value`, `duration`, `convexity`, `key_rate_durations`, `portfolio_yield`, `PortfolioScenario`, `compare_scenarios`, `save_scenario` |
 | **MonteCarloPricing** | GBM path simulation | `colwise_simulate_stock_prices`, `priceCallOptionBroadcasted` |
 | **MarketEnv** | Unified market-state container | `MarketEnvironment` (curves, vol surfaces, spot/FX, regimes) |
