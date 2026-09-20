@@ -92,5 +92,3 @@ function update_market(env::MarketEnvironment;
         env.market_regime, env.volatility_regime, env.calendar
     )
 end
-
-end
