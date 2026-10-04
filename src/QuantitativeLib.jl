@@ -30,15 +30,18 @@ export InterestMode, ContinuousInterest, SimpleInterest
 
 include("./Curves.jl")
 using .Curves
-export InterestCurve, ZeroCurve
-export tenor, zero_rate, discount_factor, forward_rate
+export InterestCurve, ZeroCurve, NelsonSiegelCurve, NelsonSiegelSvenssonCurve
+export tenor, zero_rate, discount_factor, forward_rate, ns_zero_rate, ns_svensson_zero_rate, fit_nelson_siegel, fit_nelson_siegel_svensson
 export BondQuote, cash_flows, bootstrap_zero_curve
-export AbstractInterpolation, Linear, CubicSpline
+export AbstractInterpolation, Linear, CubicSpline, MonotoneCubic, interpolate
 export make_curve, get_rate, get_discount_factor, get_forward_rate
 export RateType, RateNode, yearfrac, VolSurface
 export ZeroRate, ForwardRate, DiscountFactor, SwapRate, LiborRate, SofrRate
 export YieldCurve, ForwardCurve, DiscountCurve, BasisCurve, CreditCurve
 export interpolate_vol, bootstrap_yield_curve
+export Compounding, ContinuousCompounding, AnnualCompounding, SemiAnnualCompounding, QuarterlyCompounding, MonthlyCompounding, SimpleCompounding
+export convert_rate, zero_to_par, par_to_zero
+export survival_probability, default_probability, credit_spread, hazard_to_spread, spread_to_hazard
 
 include("./SwapPricing.jl")
 

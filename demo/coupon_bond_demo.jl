@@ -41,7 +41,6 @@ cal = InstrumentCalendar(_schedule_dates)
 
 bond = CouponBond(issue_date, cal, coupon_rate, face_value)
 generate_coupons!(bond)
-
 println("=" ^ 70)
 println("  Coupon Bond Pricing Demo")
 println("=" ^ 70)
