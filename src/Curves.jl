@@ -1343,39 +1343,141 @@ end
 # Bootstrap Yield Curve (parametric)
 # ─────────────────────────────────────────────
 
+"""
+Build the fixed-leg payment schedule of an interest-rate swap.
+
+Payments fall every `12 / frequency` months, starting one period after `start`
+and ending exactly on `end_date`. `frequency` is the number of fixed payments
+per year (e.g. 2 for semi-annual, 1 for annual) and must divide 12.
+"""
+function _swap_schedule(start::Date, end_date::Date, frequency::Int)::Vector{Date}
+    @assert frequency > 0 "Frequency must be positive"
+    @assert 12 % frequency == 0 "Payment frequency ($frequency) must divide 12"
+    step = div(12, frequency)
+    dates = Date[]
+    d = start + Month(step)
+    while d <= end_date
+        push!(dates, d)
+        d += Month(step)
+    end
+    @assert !isempty(dates) "Swap has zero payment dates"
+    @assert last(dates) == end_date "Schedule must end exactly at maturity"
+    return dates
+end
+
+"""
+Assemble a [`ZeroCurve`](@ref) from a dict of `(date, continuous-zero-rate)`
+nodes, sorted by date. Swaps override deposits at any shared date.
+"""
+function _curve_from_nodes(as_of::Date, nodes::Dict{Date,Float64})::ZeroCurve
+    dates = sort(collect(keys(nodes)))
+    return ZeroCurve(as_of, [(d, nodes[d]) for d in dates])
+end
+
+"""
+Solve the par-swap equation for the zero rate at maturity `T`.
+
+A par swap at rate `K` satisfies `K = (1 - DF(T)) / A`, where `A = sum(delta_i
+DF(s_i))` is the annuity over the fixed leg. Every payment before `T` is
+discounted with the curve `Z` pinned so far, so `DF(T)` is the only unknown and
+the equation is linear in it:
+
+    DF(T) = (1 - K*A_prev) / (1 + K*delta_n),   z_T = -log(DF(T)) / tau_T
+
+where `A_prev` is the annuity of the pre-maturity payments, `delta_n` the final
+accrual fraction, and `tau_T` the tenor of `T`.
+"""
+function bootstrap_swap_node(Z::ZeroCurve, as_of::Date, maturity::Date,
+                             par::Float64, frequency::Int, day_count::Float64)::Float64
+    tau_T = (maturity - as_of).value / day_count
+    @assert tau_T > 0 "Swap maturity must be after as_of"
+    dates = _swap_schedule(as_of, maturity, frequency)
+    n = length(dates)
+    annuity_prev = 0.0
+    prev = as_of
+    delta_last = 0.0
+    for i in 1:n
+        delta = (dates[i] - prev).value / day_count
+        if i == n
+            delta_last = delta
+        else
+            annuity_prev += delta * discount_factor(Z, dates[i]; day_count=day_count)
+        end
+        prev = dates[i]
+    end
+    DF_T = (1.0 - par * annuity_prev) / (1.0 + par * delta_last)
+    @assert DF_T > 0.0 "Bootstrapped discount factor non-positive (inconsistent par rate?)"
+    return -log(DF_T) / tau_T
+end
+
+"""
+Bootstrap a zero-rate yield curve from deposit and par-swap market quotes.
+
+The short end is built from deposits; each par swap pins one additional zero
+rate at its maturity by solving the par-swap equation in closed form (see
+[`bootstrap_swap_node`](@ref)). Deposits are treated as simple rates over
+calendar years and converted to continuously-compounded zeros; swaps are quoted
+on an annualised par basis with `fixed_frequency` fixed payments per year.
+
+# Arguments
+- `deposit_rates`, `deposit_tenors`: simple deposit rates and their tenors in
+  calendar years (matching pairs).
+- `swap_rates`, `swap_tenors`: par swap rates and their tenors in calendar
+  years (matching pairs).
+
+# Keyword arguments
+- `currency`: currency code stored on the curve (default `"USD"`).
+- `interp_method`: interpolation type for the resulting curve (default `Linear`).
+- `day_count`: day-count divisor used for all year-fraction math (default
+  `day_count("ACT_360")`).
+- `fixed_frequency`: fixed payments per year for the swaps (default `2`,
+  semi-annual).
+- `name`: label stored on the curve (default `"Bootstrapping"`).
+
+# Returns
+- A `YieldCurve` (method `:bootstrapping`) pinned at every deposit and swap
+  maturity, with one continuously-compounded zero rate per node.
+"""
 function bootstrap_yield_curve(
-    as_of::Date,
-    deposit_rates::Vector{Float64},
-    deposit_tenors::Vector{Int},
-    swap_rates::Vector{Float64},
-    swap_tenors::Vector{Int};
-    currency::String = "USD",
-    interp_method::Type{Linear} = Linear,
-    day_count::Float64 = day_count("ACT_360")
-)
-    # Step 1: Build short-end from deposits
-    deposit_dates = [as_of + Year(tenor) for tenor in deposit_tenors]
-    deposit_dfs = [1.0 / (1.0 + r * t) for (r, t) in zip(deposit_rates, deposit_tenors ./ day_count)]
+    as_of::Date, deposit_rates::Vector{Float64}, deposit_tenors::Vector{Int},
+    swap_rates::Vector{Float64}, swap_tenors::Vector{Int};
+    currency::String = "USD", interp_method::Type{Linear} = Linear,
+    day_count::Float64 = day_count("ACT_360"), fixed_frequency::Int = 2,
+    name::String = "Bootstrapping")
 
-    # Step 2: Bootstrap swaps (simplified)
-    all_dates = vcat(deposit_dates, [as_of + Year(t) for t in swap_tenors])
-    all_rates = vcat(deposit_rates, swap_rates)
+    @assert !isempty(deposit_rates) "At least one deposit rate is required"
+    @assert !isempty(swap_rates) "At least one swap rate is required"
+    @assert length(deposit_rates) == length(deposit_tenors) "deposit_rates and deposit_tenors must have the same length"
+    @assert length(swap_rates) == length(swap_tenors) "swap_rates and swap_tenors must have the same length"
+    @assert all(t -> t > 0, deposit_tenors) "Deposit tenors must be positive"
+    @assert all(t -> t > 0, swap_tenors) "Swap tenors must be positive"
 
-    # Sort by date
-    perm = sortperm(all_dates)
-    all_dates = all_dates[perm]
-    all_rates = all_rates[perm]
+    # Step 1: short end from deposits. A simple deposit rate r over tau years
+    # implies DF = 1/(1 + r*tau); the equivalent continuous zero is log(1 + r*tau)/tau.
+    node_rates = Dict{Date,Float64}()
+    for (r, tenor) in zip(deposit_rates, deposit_tenors)
+        d = as_of + Year(tenor)
+        tau = (d - as_of).value / day_count
+        node_rates[d] = log(1.0 + r * tau) / tau
+    end
 
-    return YieldCurve(
-        Curve(as_of,
-              [RateNode(as_of, d, yearfrac(as_of, d), r, ZeroRate, "ACT/360", "bootstrap")
-               for (d, r) in zip(all_dates, all_rates)],
-              interpolate(interp_method,
-                          [yearfrac(as_of, d) for d in all_dates],
-                          all_rates),
-              currency, "ACT/360", "Bootstrapped"),
-        :bootstrapping
-    )
+    # Step 2: bootstrap swaps, pinning one zero-rate node per swap. Each swap
+    # depends only on the nodes already pinned, so the curve is rebuilt after
+    # every step and the next swap discounts against it.
+    Z = _curve_from_nodes(as_of, node_rates)
+    for idx in sortperm(swap_tenors)
+        maturity = as_of + Year(swap_tenors[idx])
+        node_rates[maturity] = bootstrap_swap_node(Z, as_of, maturity, swap_rates[idx], fixed_frequency, day_count)
+        Z = _curve_from_nodes(as_of, node_rates)
+    end
+
+    # Step 3: assemble the parametric curve.
+    dates = sort(collect(keys(node_rates)))
+    rates = [node_rates[d] for d in dates]
+    dc_str = day_count ≈ 365.0 ? "ACT/365" : "ACT/360"
+    curve = make_curve(as_of, dates, rates, ZeroRate;
+                       currency=currency, day_count=dc_str, interp_method=interp_method, name=name)
+    return YieldCurve(curve, :bootstrapping)
 end
 
 end # module Curves

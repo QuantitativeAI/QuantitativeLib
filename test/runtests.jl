@@ -2,6 +2,59 @@ using QuantitativeLib
 using Dates
 using Test
 
+# ─────────────────────────────────────────────
+# Helpers for bootstrap_yield_curve tests
+# ─────────────────────────────────────────────
+
+# Discount factor from a ZeroCurve `t` to date `d` under day-count `dc`.
+_df(t, d, dc) = QuantitativeLib.discount_factor(t, d; day_count=dc)
+
+# Simple deposit rate consistent with curve `t` at `tenor` calendar years.
+function _deposit_rate(t, as_of, tenor, dc)
+    d = as_of + Year(tenor)
+    tau = (d - as_of).value / dc
+    return (1.0 / _df(t, d, dc) - 1.0) / tau
+end
+
+# Par swap rate consistent with curve `t` for maturity `m`, fixed frequency `freq`.
+function _par_swap(t, as_of, maturity, freq, dc)
+    step = div(12, freq)
+    dates = Date[]
+    d = as_of + Month(step)
+    while d <= maturity
+        push!(dates, d)
+        d += Month(step)
+    end
+    annuity = 0.0
+    prev = as_of
+    for s in dates
+        annuity += ((s - prev).value / dc) * _df(t, s, dc)
+        prev = s
+    end
+    return (1.0 - _df(t, maturity, dc)) / annuity
+end
+
+# Par swap rate implied by a YieldCurve `yc` (via get_rate -> continuous zero,
+# DF = exp(-z*t)). Used to check the bootstrapped curve reproduces market pars.
+function _par_swap_yc(yc, as_of, maturity, freq, dc)
+    step = div(12, freq)
+    dates = Date[]
+    d = as_of + Month(step)
+    while d <= maturity
+        push!(dates, d)
+        d += Month(step)
+    end
+    annuity = 0.0
+    prev = as_of
+    for s in dates
+        t = (s - as_of).value / dc
+        annuity += ((s - prev).value / dc) * exp(-QuantitativeLib.get_rate(yc, t) * t)
+        prev = s
+    end
+    tm = (maturity - as_of).value / dc
+    return (1.0 - exp(-QuantitativeLib.get_rate(yc, tm) * tm)) / annuity
+end
+
 @testset "QuantitativeLib.jl" begin
     @test isdefined(@__MODULE__, :QuantitativeLib)
     @test isa(QuantitativeLib, Module)
@@ -546,6 +599,139 @@ end
     # Constructor validation
     @test_throws AssertionError QuantitativeLib.MonotoneCubic([1.0, 2.0], [0.1, 0.2, 0.3])
     @test_throws AssertionError QuantitativeLib.MonotoneCubic([2.0, 1.0], [0.1, 0.2])
+end
+
+@testset "bootstrap_yield_curve (flat recovery)" begin
+    # A flat term structure must be recovered exactly: for a flat curve flat
+    # extrapolation equals interpolation, so even the semi-annual pre-maturity
+    # payments (which fall outside the deposit nodes) discount consistently.
+    as_of = Date(2026, 1, 1)
+    dc = 365.0
+    r = 0.05
+    deposits = [1, 2]
+    swaps = [3, 5, 10]
+    freq = 2  # semi-annual
+
+    truth = QuantitativeLib.ZeroCurve(as_of, [(as_of, r)])
+    dep_rates = [_deposit_rate(truth, as_of, n, dc) for n in deposits]
+    swap_rates = [_par_swap(truth, as_of, as_of + Year(n), freq, dc) for n in swaps]
+
+    yc = QuantitativeLib.bootstrap_yield_curve(as_of, dep_rates, deposits, swap_rates, swaps;
+                                               day_count=dc, fixed_frequency=freq)
+
+    @test yc isa QuantitativeLib.YieldCurve
+    @test yc.bootstrap_method == :bootstrapping
+    for n in vcat(deposits, swaps)
+        d = as_of + Year(n)
+        @test QuantitativeLib.get_rate(yc, (d - as_of).value / dc) ≈ r atol=1e-9
+    end
+end
+
+@testset "bootstrap_yield_curve (term structure recovery)" begin
+    # Annual fixed swaps at every integer year: each pre-maturity payment lands
+    # on a truth node, so the whole non-flat term structure is recovered exactly.
+    as_of = Date(2026, 1, 1)
+    dc = 365.0
+    truth = QuantitativeLib.ZeroCurve(as_of,
+        [(as_of, 0.030),
+         (Date(2027, 1, 1), 0.032), (Date(2028, 1, 1), 0.034), (Date(2029, 1, 1), 0.036),
+         (Date(2030, 1, 1), 0.038), (Date(2031, 1, 1), 0.040), (Date(2032, 1, 1), 0.042),
+         (Date(2033, 1, 1), 0.044), (Date(2034, 1, 1), 0.046), (Date(2035, 1, 1), 0.048),
+         (Date(2036, 1, 1), 0.050)])
+    deposits = [1, 2]
+    swaps = [3, 4, 5, 6, 7, 8, 9, 10]
+    freq = 1  # annual
+
+    dep_rates = [_deposit_rate(truth, as_of, n, dc) for n in deposits]
+    swap_rates = [_par_swap(truth, as_of, as_of + Year(n), freq, dc) for n in swaps]
+
+    yc = QuantitativeLib.bootstrap_yield_curve(as_of, dep_rates, deposits, swap_rates, swaps;
+                                               day_count=dc, fixed_frequency=freq)
+
+    truth_at = Dict(d => z for (d, z) in truth.nodes)
+    for n in vcat(deposits, swaps)
+        d = as_of + Year(n)
+        @test QuantitativeLib.get_rate(yc, (d - as_of).value / dc) ≈ truth_at[d] atol=1e-9
+    end
+
+    # And the bootstrapped curve reproduces the input par rates.
+    for n in swaps
+        m = as_of + Year(n)
+        @test _par_swap_yc(yc, as_of, m, freq, dc) ≈ _par_swap(truth, as_of, m, freq, dc) atol=1e-9
+    end
+end
+
+@testset "bootstrap_yield_curve (semi-annual, approximate recovery)" begin
+    # Semi-annual swaps with a gap between the deposits (2Y) and the first swap
+    # (3Y): the pre-maturity payments that fall outside the nodes pinned so far
+    # discount under flat-forward extrapolation, so the non-flat term structure
+    # is recovered only approximately. Deposits pin exactly; swaps do not.
+    as_of = Date(2026, 1, 1)
+    dc = 365.0
+    truth = QuantitativeLib.ZeroCurve(as_of,
+        [(as_of, 0.030),
+         (Date(2027, 1, 1), 0.032), (Date(2028, 1, 1), 0.034), (Date(2029, 1, 1), 0.036),
+         (Date(2030, 1, 1), 0.038), (Date(2031, 1, 1), 0.040), (Date(2032, 1, 1), 0.042),
+         (Date(2033, 1, 1), 0.044), (Date(2034, 1, 1), 0.046), (Date(2035, 1, 1), 0.048),
+         (Date(2036, 1, 1), 0.050)])
+    deposits = [1, 2]
+    swaps = [3, 5, 10]
+    freq = 2  # semi-annual
+
+    dep_rates = [_deposit_rate(truth, as_of, n, dc) for n in deposits]
+    swap_rates = [_par_swap(truth, as_of, as_of + Year(n), freq, dc) for n in swaps]
+
+    yc = QuantitativeLib.bootstrap_yield_curve(as_of, dep_rates, deposits, swap_rates, swaps;
+                                               day_count=dc, fixed_frequency=freq)
+
+    truth_at = Dict(d => z for (d, z) in truth.nodes)
+
+    # Deposits pin their nodes exactly (no pre-maturity payments to extrapolate).
+    for n in deposits
+        d = as_of + Year(n)
+        @test QuantitativeLib.get_rate(yc, (d - as_of).value / dc) ≈ truth_at[d] atol=1e-9
+    end
+
+    # Swaps recover only approximately: the semi-annual legs and the 2Y->3Y gap
+    # force flat-forward extrapolation between pinned nodes, and the error grows
+    # with tenor as the longer legs spend more time outside the pinned nodes.
+    for n in swaps
+        d = as_of + Year(n)
+        @test QuantitativeLib.get_rate(yc, (d - as_of).value / dc) ≈ truth_at[d] atol=1e-3
+    end
+
+    # The long-end recovery is genuinely approximate, not merely within tolerance
+    # of an exact answer.
+    d10 = as_of + Year(10)
+    @test abs(QuantitativeLib.get_rate(yc, (d10 - as_of).value / dc) - truth_at[d10]) > 1e-5
+end
+
+@testset "bootstrap_yield_curve (validation)" begin
+    as_of = Date(2026, 1, 1)
+
+    # Empty deposits (nothing to seed the short end)
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, Float64[], Int[], [0.05], [3])
+
+    # Mismatched deposit lengths
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, [0.05], [1, 2], [0.05], [3])
+
+    # Mismatched swap lengths
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, [0.05], [1], [0.05, 0.06], [3])
+
+    # Non-positive deposit tenor
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, [0.05], [-1], [0.05], [3])
+
+    # Non-positive swap tenor
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, [0.05], [1], [0.05], [0])
+
+    # Par rate far too high -> implied discount factor non-positive
+    @test_throws AssertionError QuantitativeLib.bootstrap_yield_curve(
+        as_of, [0.05], [1], [5.0], [10]; fixed_frequency=2)
 end
 
 include("portfolio_test.jl")
